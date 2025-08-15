@@ -280,6 +280,17 @@ class ArbitrageExecutor:
         """Execute both legs concurrently (atomic hedge)."""
         start_time = time.time()
         
+        # Debug logging
+        logger.info(f"Available exchanges: {list(self.exchanges.keys())}")
+        logger.info(f"Opportunity left_exchange: {opportunity.left_exchange}")
+        logger.info(f"Opportunity right_exchange: {opportunity.right_exchange}")
+        
+        # Check if exchanges exist
+        if opportunity.left_exchange not in self.exchanges:
+            raise RuntimeError(f"Left exchange '{opportunity.left_exchange}' not found in {list(self.exchanges.keys())}")
+        if opportunity.right_exchange not in self.exchanges:
+            raise RuntimeError(f"Right exchange '{opportunity.right_exchange}' not found in {list(self.exchanges.keys())}")
+        
         # Determine which exchange to buy from and sell to
         if opportunity.direction == ArbitrageDirection.LEFT_TO_RIGHT:
             buy_exchange = self.exchanges[opportunity.left_exchange]

@@ -75,6 +75,7 @@ class CrossExchangeArbBot:
             logger.info("Binance exchange initialized")
         except Exception as e:
             logger.error(f"Failed to initialize Binance: {e}")
+            raise RuntimeError(f"Cannot start bot without Binance exchange: {e}")
         
         # Initialize OKX
         try:
@@ -82,7 +83,13 @@ class CrossExchangeArbBot:
             logger.info("OKX exchange initialized")
         except Exception as e:
             logger.error(f"Failed to initialize OKX: {e}")
+            raise RuntimeError(f"Cannot start bot without OKX exchange: {e}")
         
+        # Verify both exchanges are available
+        if 'binance' not in exchanges or 'okx' not in exchanges:
+            raise RuntimeError("Both exchanges must be initialized to start the bot")
+        
+        logger.info(f"Successfully initialized exchanges: {list(exchanges.keys())}")
         return exchanges
 
     async def start(self):

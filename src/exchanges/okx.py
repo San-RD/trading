@@ -35,7 +35,7 @@ class OKXExchange(BaseExchange):
                 'apiKey': account_config.key,
                 'secret': account_config.secret,
                 'password': account_config.password,  # OKX passphrase
-                'sandbox': True,  # Testing with testnet first
+                'sandbox': account_config.sandbox,  # Use config setting
                 'timeout': 5000,
                 'enableRateLimit': True,
             })
@@ -52,9 +52,7 @@ class OKXExchange(BaseExchange):
                 'apiKey': account_config.key,
                 'secret': account_config.secret,
                 'password': account_config.password,  # OKX passphrase
-                'sandbox': True,  # Testing with testnet first
-                'timeout': 5000,
-                'enableRateLimit': True,
+                'sandbox': account_config.sandbox,  # Use config setting
             })
             logger.info("OKX WebSocket client initialized")
         except Exception as e:
