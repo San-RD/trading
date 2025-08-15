@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  tri-arb-bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: tri-arb-bot
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    command: ["python", "-m", "src.main", "run", "--mode", "paper"]
+    networks:
+      - bot-network
+
+  # Optional: Add Redis for caching (future enhancement)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: tri-arb-bot-redis
+  #   restart: unless-stopped
+  #   networks:
+  #     - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+
+volumes:
+  data:
+  logs:
