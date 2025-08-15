@@ -223,7 +223,7 @@ class CrossExchangeArbBot:
             self.risk_manager.update_risk_metrics(execution_result)
             
             # Journal execution
-            await self.storage.journal_execution(execution_result)
+            await self.storage.insert_execution(execution_result)
             
             # Send notifications
             if self.alerts:
