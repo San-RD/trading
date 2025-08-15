@@ -227,7 +227,14 @@ class CrossExchangeArbBot:
             
             # Send notifications
             if self.alerts:
-                await self.alerts.notify_execution(execution_result)
+                await self.alerts.notify_trade_end({
+                    'symbol': opportunity.symbol,
+                    'direction': opportunity.direction.value,
+                    'realized_pnl': execution_result.realized_pnl,
+                    'execution_time_ms': execution_result.execution_time_ms,
+                    'success': execution_result.success,
+                    'error': execution_result.error
+                })
             
             logger.info(f"Opportunity executed: {opportunity.symbol} {opportunity.direction.value}, PnL: ${execution_result.realized_pnl:.4f}")
             

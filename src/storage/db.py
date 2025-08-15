@@ -166,7 +166,7 @@ class Database:
                 execution_result.realized_pnl,
                 execution_result.opportunity.net_edge_bps,
                 execution_result.execution_time_ms,
-                'paper' if 'mode' not in execution_result.metadata else execution_result.metadata['mode'],
+                'paper' if not execution_result.metadata or 'mode' not in execution_result.metadata else execution_result.metadata['mode'],
                 execution_result.error or '',
                 int(time.time() * 1000)
             ))
