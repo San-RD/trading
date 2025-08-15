@@ -10,6 +10,11 @@ from .executor import ExecutionResult
 from ..config import Config
 
 
+class RiskLimitExceeded(Exception):
+    """Raised when risk limits are exceeded."""
+    pass
+
+
 @dataclass
 class RiskMetrics:
     """Risk management metrics."""
@@ -41,9 +46,17 @@ class RiskManager:
             risk_score=0.0
         )
         self.daily_reset_time = int(time.time())
-        self.max_consecutive_losses = 5
-        self.max_daily_loss = -1000.0  # TODO: make configurable
-        self.max_daily_notional = 100000.0  # TODO: make configurable
+        self.max_consecutive_losses = config.risk.max_consecutive_losses
+        self.max_daily_loss = config.risk.max_daily_loss
+        self.max_daily_notional = config.risk.max_daily_notional
+        
+        # Initialize additional attributes for backward compatibility
+        self.total_trades = 0
+        self.current_pnl = 0.0
+        self.daily_trades = 0
+        self.session_trades = 0
+        self.max_pnl = 0.0
+        self.initial_balance = 100.0  # Default starting balance
 
     def check_execution_risk(self, opportunity: ArbitrageOpportunity) -> tuple[bool, Optional[str]]:
         """Check if execution is safe from a risk perspective."""
@@ -153,13 +166,13 @@ class RiskManager:
     def should_stop_trading(self, execution_result: Optional[ExecutionResult] = None) -> bool:
         """Check if trading should be stopped based on risk limits."""
         # Check consecutive losses
-        if self.consecutive_losses >= self.config.risk.max_consecutive_losses:
-            logger.warning(f"Stopping trading due to {self.consecutive_losses} consecutive losses")
+        if self.metrics.consecutive_losses >= self.config.risk.max_consecutive_losses:
+            logger.warning(f"Stopping trading due to {self.metrics.consecutive_losses} consecutive losses")
             return True
         
         # Check daily loss limit
-        if self.daily_pnl < self.config.risk.max_daily_loss:
-            logger.warning(f"Stopping trading due to daily loss limit: ${self.daily_pnl:.2f}")
+        if self.metrics.daily_pnl < self.config.risk.max_daily_loss:
+            logger.warning(f"Stopping trading due to daily loss limit: ${self.metrics.daily_pnl:.2f}")
             return True
         
         # Check drawdown
@@ -209,7 +222,8 @@ class RiskManager:
         
         # Update PnL
         self.current_pnl += execution_result.realized_pnl
-        self.daily_pnl += execution_result.realized_pnl
+        self.metrics.daily_pnl += execution_result.realized_pnl
+        self.metrics.total_pnl += execution_result.realized_pnl
         
         # Update max PnL
         if self.current_pnl > self.max_pnl:
@@ -217,12 +231,12 @@ class RiskManager:
         
         # Update consecutive losses/wins
         if execution_result.realized_pnl > 0:
-            self.consecutive_losses = 0
+            self.metrics.consecutive_losses = 0
         else:
-            self.consecutive_losses += 1
+            self.metrics.consecutive_losses += 1
         
         # Log risk metrics
-        logger.info(f"Risk metrics updated: trades={self.total_trades}, pnl=${self.current_pnl:.2f}, consecutive_losses={self.consecutive_losses}")
+        logger.info(f"Risk metrics updated: trades={self.metrics.total_trades}, pnl=${self.metrics.total_pnl:.2f}, consecutive_losses={self.metrics.consecutive_losses}")
         
         # Check if we should stop trading
         if self.should_stop_trading(execution_result):
