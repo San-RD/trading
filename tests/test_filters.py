@@ -3,7 +3,7 @@
 import pytest
 from decimal import Decimal
 
-from src.exchange.filters import SymbolRule, round_price, round_qty, enforce_min_notional, validate_order_params
+from src.exchanges.filters import SymbolRule, round_price, round_qty, enforce_min_notional, validate_order_params
 
 
 class TestSymbolRule:

@@ -95,7 +95,28 @@ class CrossExchangeArbBot:
         return exchanges
 
     async def start(self):
-        """Start the bot."""
+        """Start the bot with graceful shutdown handling."""
+        if self.running:
+            return
+        
+        # Set up signal handlers for graceful shutdown
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            asyncio.create_task(self.stop())
+        
+        # Register signal handlers
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        try:
+            await self._start_internal()
+        except Exception as e:
+            logger.error(f"Error during bot startup: {e}")
+            await self.stop()
+            raise
+    
+    async def _start_internal(self):
+        """Internal start method."""
         if self.running:
             return
         
@@ -146,7 +167,7 @@ class CrossExchangeArbBot:
             await self.stop()
 
     async def stop(self):
-        """Stop the bot."""
+        """Stop the bot with graceful shutdown."""
         if not self.running:
             return
         
@@ -154,12 +175,35 @@ class CrossExchangeArbBot:
         self.running = False
         
         try:
+            # Stop quote bus first
             await self.quote_bus.stop()
-            for exchange in self.exchanges.values():
+            
+            # Cancel all open orders on exchanges
+            logger.info("Cancelling all open orders...")
+            for name, exchange in self.exchanges.items():
+                try:
+                    # Get open orders and cancel them
+                    open_orders = await exchange.fetch_open_orders()
+                    for order in open_orders:
+                        try:
+                            await exchange.cancel_order(order['id'], order['symbol'])
+                            logger.info(f"Cancelled order {order['id']} on {name}")
+                        except Exception as e:
+                            logger.warning(f"Failed to cancel order {order['id']} on {name}: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch open orders from {name}: {e}")
+                
+                # Disconnect exchange
                 await exchange.disconnect()
+            
+            # Disconnect storage
             await self.storage.disconnect()
+            
+            logger.info("Bot stopped successfully")
+            
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
+            raise
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""

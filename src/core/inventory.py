@@ -98,6 +98,120 @@ class InventoryManager:
                 }
         
         return summary
+    
+    def detect_inventory_drift(self) -> List[Dict[str, Any]]:
+        """Detect inventory imbalances across exchanges."""
+        drift_alerts = []
+        
+        if not self.balances:
+            return drift_alerts
+        
+        # Check for each asset
+        all_assets = set()
+        for balances in self.balances.values():
+            all_assets.update(balances.keys())
+        
+        for asset in all_assets:
+            if asset == self.rebalance_asset:
+                continue  # Skip stablecoin for now
+            
+            # Calculate total balance and per-exchange distribution
+            total_balance = self.get_total_balance(asset)
+            if total_balance <= 0:
+                continue
+            
+            exchange_balances = {}
+            for exchange_name, balances in self.balances.items():
+                if asset in balances:
+                    exchange_balances[exchange_name] = balances[asset].total
+            
+            # Check for imbalances
+            for exchange_name, balance in exchange_balances.items():
+                balance_pct = (balance / total_balance) * 100
+                
+                # Alert if any exchange has >70% or <10% of total balance
+                if balance_pct > 70:
+                    drift_alerts.append({
+                        'type': 'concentration',
+                        'asset': asset,
+                        'exchange': exchange_name,
+                        'balance_pct': balance_pct,
+                        'balance_amount': balance,
+                        'total_amount': total_balance,
+                        'severity': 'high' if balance_pct > 80 else 'medium',
+                        'message': f"{exchange_name} has {balance_pct:.1f}% of {asset} balance ({balance:.6f} / {total_balance:.6f})"
+                    })
+                elif balance_pct < 10:
+                    drift_alerts.append({
+                        'type': 'depletion',
+                        'asset': asset,
+                        'exchange': exchange_name,
+                        'balance_pct': balance_pct,
+                        'balance_amount': balance,
+                        'total_amount': total_balance,
+                        'severity': 'high' if balance_pct < 5 else 'medium',
+                        'message': f"{exchange_name} has only {balance_pct:.1f}% of {asset} balance ({balance:.6f} / {total_balance:.6f})"
+                    })
+        
+        return drift_alerts
+    
+    def get_rebalance_suggestions(self, drift_alerts: List[Dict[str, Any]]) -> List[RebalancePlan]:
+        """Generate rebalancing suggestions based on drift alerts."""
+        suggestions = []
+        
+        for alert in drift_alerts:
+            if alert['type'] == 'concentration':
+                # Suggest moving from concentrated exchange to others
+                from_exchange = alert['exchange']
+                asset = alert['asset']
+                amount = alert['balance_amount'] * 0.3  # Move 30% of excess
+                
+                # Find exchanges with low balance
+                for other_exchange, balances in self.balances.items():
+                    if other_exchange != from_exchange and asset in balances:
+                        other_balance = balances[asset].total
+                        other_pct = (other_balance / alert['total_amount']) * 100
+                        
+                        if other_pct < 20:  # If other exchange has <20%
+                            suggestions.append(RebalancePlan(
+                                asset=asset,
+                                from_exchange=from_exchange,
+                                to_exchange=other_exchange,
+                                amount=amount,
+                                reason=f"Rebalance from {from_exchange} ({alert['balance_pct']:.1f}%) to {other_exchange} ({other_pct:.1f}%)",
+                                priority='high' if alert['severity'] == 'high' else 'medium',
+                                estimated_fee=0.0,  # Will be calculated based on network
+                                estimated_time_minutes=5
+                            ))
+                            break
+            
+            elif alert['type'] == 'depletion':
+                # Suggest moving from other exchanges to depleted one
+                to_exchange = alert['exchange']
+                asset = alert['asset']
+                
+                # Find exchanges with higher balance
+                for other_exchange, balances in self.balances.items():
+                    if other_exchange != to_exchange and asset in balances:
+                        other_balance = balances[asset].total
+                        other_pct = (other_balance / alert['total_amount']) * 100
+                        
+                        if other_pct > 30:  # If other exchange has >30%
+                            amount = min(other_balance * 0.2, alert['total_amount'] * 0.15)  # Move reasonable amount
+                            
+                            suggestions.append(RebalancePlan(
+                                asset=asset,
+                                from_exchange=other_exchange,
+                                to_exchange=to_exchange,
+                                amount=amount,
+                                reason=f"Rebalance from {other_exchange} ({other_pct:.1f}%) to {to_exchange} ({alert['balance_pct']:.1f}%)",
+                                priority='high' if alert['severity'] == 'high' else 'medium',
+                                estimated_fee=0.0,  # Will be calculated based on network
+                                estimated_time_minutes=5
+                            ))
+                            break
+        
+        return suggestions
 
     def check_rebalancing_needs(self) -> List[RebalancePlan]:
         """Check if rebalancing is needed and create plans."""

@@ -48,7 +48,7 @@ class ArbitrageExecutor:
         self.cancel_on_partial = config.execution.hedge.get('cancel_on_partial', True)
 
     async def execute_arbitrage(self, opportunity: ArbitrageOpportunity) -> ExecutionResult:
-        """Execute an arbitrage opportunity."""
+        """Execute an arbitrage opportunity with latency enforcement."""
         start_time = time.time()
         logger.info(f"Executing arbitrage: {opportunity.symbol} {opportunity.direction.value}")
         
@@ -56,7 +56,7 @@ class ArbitrageExecutor:
             if self.mode == "paper":
                 return await self._execute_paper_trade(opportunity, start_time)
             else:
-                return await self._execute_live_trade(opportunity)
+                return await self._execute_live_trade(opportunity, start_time)
                 
         except Exception as e:
             error_msg = f"Execution failed: {e}"
@@ -260,25 +260,74 @@ class ArbitrageExecutor:
         sell_fee = sell_proceeds * (opportunity.metadata['sell_fee_bps'] / 10000)
         
         return (sell_proceeds - sell_fee) - (buy_cost + buy_fee)
+    
+    async def _place_order_with_latency_check(self, exchange: BaseExchange, symbol: str, side: str,
+                                            order_type: str, amount: float, price: float,
+                                            start_time: float, leg_name: str) -> OrderResult:
+        """Place order with latency enforcement."""
+        order_start = time.time()
+        
+        try:
+            # Place the order
+            order_result = await exchange.place_order(
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                amount=amount,
+                price=price
+            )
+            
+            # Check latency
+            order_latency = int((time.time() - order_start) * 1000)
+            total_latency = int((time.time() - start_time) * 1000)
+            
+            if order_latency > self.max_latency_ms:
+                logger.warning(f"{leg_name} order latency {order_latency}ms exceeds limit {self.max_latency_ms}ms")
+                # Consider cancelling if latency is too high
+                if order_result.success and self.cancel_on_partial:
+                    try:
+                        await exchange.cancel_order(symbol, order_result.order_id)
+                        logger.info(f"Cancelled {leg_name} order due to high latency")
+                        return OrderResult(False, error=f"Order cancelled due to high latency: {order_latency}ms")
+                    except Exception as e:
+                        logger.error(f"Failed to cancel {leg_name} order: {e}")
+            
+            if total_latency > self.max_latency_ms * 2:
+                logger.warning(f"Total execution latency {total_latency}ms exceeds limit {self.max_latency_ms * 2}ms")
+            
+            # Add latency metadata
+            if hasattr(order_result, 'metadata'):
+                order_result.metadata = order_result.metadata or {}
+            else:
+                order_result.metadata = {}
+            
+            order_result.metadata['leg_latency_ms'] = order_latency
+            order_result.metadata['total_latency_ms'] = total_latency
+            
+            return order_result
+            
+        except Exception as e:
+            order_latency = int((time.time() - order_start) * 1000)
+            logger.error(f"{leg_name} order failed after {order_latency}ms: {e}")
+            return OrderResult(False, error=str(e))
 
-    async def _execute_live_trade(self, opportunity: ArbitrageOpportunity) -> ExecutionResult:
-        """Execute live trade on exchanges."""
+    async def _execute_live_trade(self, opportunity: ArbitrageOpportunity, start_time: float) -> ExecutionResult:
+        """Execute live trade on exchanges with latency enforcement."""
         logger.info("Executing live trade")
         
         try:
             if self.atomic_hedge:
-                return await self._execute_atomic_hedge(opportunity)
+                return await self._execute_atomic_hedge(opportunity, start_time)
             else:
-                return await self._execute_sequential_hedge(opportunity)
+                return await self._execute_sequential_hedge(opportunity, start_time)
                 
         except Exception as e:
             error_msg = f"Live execution failed: {e}"
             logger.error(error_msg)
             raise
 
-    async def _execute_atomic_hedge(self, opportunity: ArbitrageOpportunity) -> ExecutionResult:
-        """Execute both legs concurrently (atomic hedge)."""
-        start_time = time.time()
+    async def _execute_atomic_hedge(self, opportunity: ArbitrageOpportunity, start_time: float) -> ExecutionResult:
+        """Execute both legs concurrently (atomic hedge) with latency enforcement."""
         
         # Debug logging
         logger.info(f"Available exchanges: {list(self.exchanges.keys())}")
@@ -303,24 +352,18 @@ class ArbitrageExecutor:
             buy_price = opportunity.buy_price * (1 + self.guard_bps / 10000)
             sell_price = opportunity.sell_price * (1 - self.guard_bps / 10000)
         
-        # Place both orders concurrently
+        # Place both orders concurrently with latency monitoring
         buy_task = asyncio.create_task(
-            buy_exchange.place_order(
-                symbol=opportunity.symbol,
-                side='buy',
-                order_type=self.execution_type,
-                amount=opportunity.trade_size,
-                price=buy_price
+            self._place_order_with_latency_check(
+                buy_exchange, opportunity.symbol, 'buy', self.execution_type,
+                opportunity.trade_size, buy_price, start_time, 'buy'
             )
         )
         
         sell_task = asyncio.create_task(
-            sell_exchange.place_order(
-                symbol=opportunity.symbol,
-                side='sell',
-                order_type=self.execution_type,
-                amount=opportunity.trade_size,
-                price=sell_price
+            self._place_order_with_latency_check(
+                sell_exchange, opportunity.symbol, 'sell', self.execution_type,
+                opportunity.trade_size, sell_price, start_time, 'sell'
             )
         )
         

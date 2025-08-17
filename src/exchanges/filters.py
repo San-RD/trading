@@ -27,24 +27,60 @@ class SymbolRule:
 
     @classmethod
     def from_exchange_info(cls, symbol: str, info: Dict[str, Any]) -> "SymbolRule":
-        """Create SymbolRule from exchange info."""
+        """Create SymbolRule from exchange info using ccxt normalized fields."""
+        # Prefer ccxt's normalized precision and limits fields
+        precision = info.get('precision', {})
+        limits = info.get('limits', {})
+        
+        # Price precision (use normalized field with fallback)
+        price_precision = precision.get('price') or info.get('pricePrecision', 8)
+        
+        # Quantity precision (use normalized field with fallback)
+        quantity_precision = precision.get('amount') or info.get('quantityPrecision', 8)
+        
+        # Min/max quantity (use normalized limits with fallback)
+        amount_limits = limits.get('amount', {})
+        min_qty = float(amount_limits.get('min') or info.get('minQty', '0'))
+        max_qty = float(amount_limits.get('max') or info.get('maxQty', '999999'))
+        
+        # Step size (use normalized field with fallback)
+        step_size = float(precision.get('amount') or info.get('stepSize', '0.00000001'))
+        
+        # Min/max notional (use normalized limits with fallback)
+        cost_limits = limits.get('cost', {})
+        min_notional = float(cost_limits.get('min') or info.get('minNotional', '0'))
+        max_notional = float(cost_limits.get('max') or info.get('maxNotional', '999999'))
+        
+        # Min/max price (use normalized limits with fallback)
+        price_limits = limits.get('price', {})
+        min_price = float(price_limits.get('min') or info.get('minPrice', '0'))
+        max_price = float(price_limits.get('max') or info.get('maxPrice', '999999'))
+        
+        # Tick size (use normalized precision with fallback)
+        tick_size = float(precision.get('price') or info.get('tickSize', '0.00000001'))
+        
+        # Status and trading flags
+        status = info.get('status', 'INACTIVE')
+        is_spot_trading_allowed = info.get('spot', False) or info.get('isSpotTradingAllowed', False)
+        is_margin_trading_allowed = info.get('margin', False) or info.get('isMarginTradingAllowed', False)
+        
         return cls(
             symbol=symbol,
-            base_asset=info.get('baseAsset', ''),
-            quote_asset=info.get('quoteAsset', ''),
-            price_precision=info.get('pricePrecision', 8),
-            quantity_precision=info.get('quantityPrecision', 8),
-            min_qty=float(info.get('minQty', '0')),
-            max_qty=float(info.get('maxQty', '999999')),
-            step_size=float(info.get('stepSize', '0.00000001')),
-            min_notional=float(info.get('minNotional', '0')),
-            max_notional=float(info.get('maxNotional', '999999')),
-            min_price=float(info.get('minPrice', '0')),
-            max_price=float(info.get('maxPrice', '999999')),
-            tick_size=float(info.get('tickSize', '0.00000001')),
-            status=info.get('status', 'INACTIVE'),
-            is_spot_trading_allowed=info.get('isSpotTradingAllowed', False),
-            is_margin_trading_allowed=info.get('isMarginTradingAllowed', False)
+            base_asset=info.get('base', info.get('baseAsset', '')),
+            quote_asset=info.get('quote', info.get('quoteAsset', '')),
+            price_precision=price_precision,
+            quantity_precision=quantity_precision,
+            min_qty=min_qty,
+            max_qty=max_qty,
+            step_size=step_size,
+            min_notional=min_notional,
+            max_notional=max_notional,
+            min_price=min_price,
+            max_price=max_price,
+            tick_size=tick_size,
+            status=status,
+            is_spot_trading_allowed=is_spot_trading_allowed,
+            is_margin_trading_allowed=is_margin_trading_allowed
         )
 
     def round_price(self, price: float) -> float:

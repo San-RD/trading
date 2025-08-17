@@ -4,7 +4,7 @@ import pytest
 from decimal import Decimal
 
 from src.core.triangle import Triangle, find_triangles, calculate_triangle_edge
-from src.exchange.filters import SymbolRule
+from src.exchanges.filters import SymbolRule
 
 
 class TestTriangle:

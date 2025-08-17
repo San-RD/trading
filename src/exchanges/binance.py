@@ -35,7 +35,7 @@ class BinanceExchange(BaseExchange):
             self.rest_client = ccxt.binance({
                 'apiKey': account_config.key,
                 'secret': account_config.secret,
-                'sandbox': True,  # Testing with testnet first
+                'sandbox': account_config.sandbox,  # Use config value
                 'timeout': 5000,
                 'enableRateLimit': True,
             })
@@ -51,7 +51,7 @@ class BinanceExchange(BaseExchange):
             self.ws_client = ccxt.binance({
                 'apiKey': account_config.key,
                 'secret': account_config.secret,
-                'sandbox': True,  # Testing with testnet first
+                'sandbox': account_config.sandbox,  # Use config value
                 'timeout': 5000,
                 'enableRateLimit': True,
             })
@@ -246,16 +246,28 @@ class BinanceExchange(BaseExchange):
             if not is_valid:
                 return OrderResult(False, error=error_msg)
             
-            # Prepare order parameters
+            # Prepare order parameters with proper IOC/FOK handling
+            _otype = (order_type or "limit").upper()
+            time_in_force = None
+            
+            if _otype in ("IOC", "FOK"):
+                ccxt_type = "limit"
+                time_in_force = _otype
+            else:
+                ccxt_type = _otype.lower()  # 'limit' or 'market'
+            
             order_params = {
                 'symbol': symbol,
                 'side': side.upper(),
-                'type': order_type.upper(),
+                'type': ccxt_type,
                 'quantity': amount,
             }
             
-            if price:
+            if ccxt_type == "limit" and price is not None:
                 order_params['price'] = price
+            
+            if time_in_force:
+                order_params['timeInForce'] = time_in_force
             
             if params:
                 order_params.update(params)
