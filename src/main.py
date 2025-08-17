@@ -9,11 +9,13 @@ import click
 from loguru import logger
 
 # uvloop is not available on Windows
-try:
-    import uvloop
-    UVLOOP_AVAILABLE = True
-except ImportError:
-    UVLOOP_AVAILABLE = False
+UVLOOP_AVAILABLE = False
+if sys.platform != "win32":
+    try:
+        import uvloop
+        UVLOOP_AVAILABLE = True
+    except ImportError:
+        UVLOOP_AVAILABLE = False
 
 from .config import get_config
 from .exchanges.binance import BinanceExchange
@@ -312,8 +314,12 @@ def run(mode, config, symbols, outfile, parquet_file):
                format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}")
     
     # Use uvloop on Linux for better performance
-    if sys.platform != "win32" and UVLOOP_AVAILABLE:
-        uvloop.install()
+    if UVLOOP_AVAILABLE:
+        try:
+            uvloop.install()
+            logger.info("Using uvloop for enhanced performance")
+        except Exception as e:
+            logger.warning(f"Failed to install uvloop: {e}")
     
     # Create and run bot
     bot = CrossExchangeArbBot(config_path=config)

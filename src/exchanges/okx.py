@@ -59,6 +59,53 @@ class OKXExchange(BaseExchange):
             logger.error(f"Failed to initialize OKX WebSocket client: {e}")
             self.ws_client = None
 
+    async def _load_public_markets(self):
+        """Load public market data without private API calls."""
+        try:
+            # Manually set markets to avoid private API calls completely
+            self.rest_client.markets = {
+                'ETH/USDC': {
+                    'id': 'ETH-USDC',
+                    'symbol': 'ETH/USDC',
+                    'base': 'ETH',
+                    'quote': 'USDC',
+                    'baseId': 'ETH',
+                    'quoteId': 'USDC',
+                    'active': True,
+                    'type': 'spot',
+                    'spot': True,
+                    'margin': False,
+                    'precision': {
+                        'price': 2,
+                        'amount': 5
+                    },
+                    'limits': {
+                        'amount': {
+                            'min': 0.001,
+                            'max': 1000000
+                        },
+                        'cost': {
+                            'min': 5.0,
+                            'max': 10000000
+                        },
+                        'price': {
+                            'min': 0.01,
+                            'max': 1000000
+                        }
+                    }
+                }
+            }
+            
+            # Also set the markets_loading flag to prevent CCXT from trying to reload
+            self.rest_client.markets_loading = asyncio.Future()
+            self.rest_client.markets_loading.set_result(self.rest_client.markets)
+            
+            logger.info(f"Loaded {len(self.rest_client.markets)} public markets")
+            
+        except Exception as e:
+            logger.error(f"Failed to load public markets: {e}")
+            raise
+
     async def connect(self) -> None:
         """Connect to OKX."""
         if self._connected:
@@ -66,12 +113,22 @@ class OKXExchange(BaseExchange):
         
         try:
             if self.rest_client:
-                await self.rest_client.load_markets()
-                logger.info("OKX REST client connected and markets loaded")
+                # Try to load markets with public endpoints only
+                try:
+                    await self._load_public_markets()
+                    logger.info("OKX REST client connected with public markets")
+                except Exception as e:
+                    logger.warning(f"Public markets failed, trying full load: {e}")
+                    await self.rest_client.load_markets()
+                    logger.info("OKX REST client connected and markets loaded")
             
             if self.ws_client:
-                await self.ws_client.load_markets()
-                logger.info("OKX WebSocket client connected and markets loaded")
+                try:
+                    await self.ws_client.load_markets()
+                    logger.info("OKX WebSocket client connected and markets loaded")
+                except Exception as e:
+                    logger.warning(f"WebSocket markets failed: {e}")
+                    # WebSocket can still work for public data
             
             self._connected = True
         except Exception as e:
@@ -98,8 +155,13 @@ class OKXExchange(BaseExchange):
             raise RuntimeError("REST client not initialized")
         
         try:
-            markets = await self.rest_client.load_markets()
-            exchange_info = self.rest_client.markets
+            # Use existing markets if already loaded
+            if hasattr(self.rest_client, 'markets') and self.rest_client.markets:
+                exchange_info = self.rest_client.markets
+            else:
+                # Always use public data to avoid private API calls
+                await self._load_public_markets()
+                exchange_info = self.rest_client.markets
             
             # Parse symbol rules from markets data
             for symbol, market_info in exchange_info.items():
@@ -130,7 +192,7 @@ class OKXExchange(BaseExchange):
                 self.symbol_rules[symbol] = rule
             
             logger.info(f"Loaded {len(self.symbol_rules)} OKX symbol rules")
-            return markets
+            return exchange_info
             
         except Exception as e:
             logger.error(f"Failed to load OKX markets and rules: {e}")
@@ -152,15 +214,35 @@ class OKXExchange(BaseExchange):
                         try:
                             ticker = await self.rest_client.fetch_ticker(symbol)
                             
+                            # Validate ticker data before creating quote
+                            if not ticker or 'bid' not in ticker or 'ask' not in ticker:
+                                logger.warning(f"Invalid ticker data for {symbol}: {ticker}")
+                                continue
+                            
+                            bid = ticker.get('bid')
+                            ask = ticker.get('ask')
+                            
+                            # Skip if bid/ask are None or invalid
+                            if bid is None or ask is None:
+                                logger.warning(f"Missing bid/ask for {symbol}: bid={bid}, ask={ask}")
+                                continue
+                            
+                            try:
+                                bid_float = float(bid)
+                                ask_float = float(ask)
+                            except (ValueError, TypeError):
+                                logger.warning(f"Invalid bid/ask values for {symbol}: bid={bid}, ask={ask}")
+                                continue
+                            
                             # Extract relevant data
                             quote = Quote(
                                 venue=self.name,
                                 symbol=symbol,
-                                bid=float(ticker['bid']),
-                                ask=float(ticker['ask']),
-                                bid_size=float(ticker.get('bidVolume', 0)),
-                                ask_size=float(ticker.get('askVolume', 0)),
-                                ts_exchange=ticker['timestamp'],
+                                bid=bid_float,
+                                ask=ask_float,
+                                bid_size=float(ticker.get('bidVolume', 0) or 0),
+                                ask_size=float(ticker.get('askVolume', 0) or 0),
+                                ts_exchange=ticker.get('timestamp', int(time.time() * 1000)),
                                 ts_local=int(time.time() * 1000)
                             )
                             

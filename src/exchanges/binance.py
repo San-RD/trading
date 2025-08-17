@@ -153,15 +153,35 @@ class BinanceExchange(BaseExchange):
                         try:
                             ticker = await self.rest_client.fetch_ticker(symbol)
                             
+                            # Validate ticker data before creating quote
+                            if not ticker or 'bid' not in ticker or 'ask' not in ticker:
+                                logger.warning(f"Invalid ticker data for {symbol}: {ticker}")
+                                continue
+                            
+                            bid = ticker.get('bid')
+                            ask = ticker.get('ask')
+                            
+                            # Skip if bid/ask are None or invalid
+                            if bid is None or ask is None:
+                                logger.warning(f"Missing bid/ask for {symbol}: bid={bid}, ask={ask}")
+                                continue
+                            
+                            try:
+                                bid_float = float(bid)
+                                ask_float = float(ask)
+                            except (ValueError, TypeError):
+                                logger.warning(f"Invalid bid/ask values for {symbol}: bid={bid}, ask={ask}")
+                                continue
+                            
                             # Extract relevant data
                             quote = Quote(
                                 venue=self.name,
                                 symbol=symbol,
-                                bid=float(ticker['bid']),
-                                ask=float(ticker['ask']),
-                                bid_size=float(ticker.get('bidVolume', 0)),
-                                ask_size=float(ticker.get('askVolume', 0)),
-                                ts_exchange=ticker['timestamp'],
+                                bid=bid_float,
+                                ask=ask_float,
+                                bid_size=float(ticker.get('bidVolume', 0) or 0),
+                                ask_size=float(ticker.get('askVolume', 0) or 0),
+                                ts_exchange=ticker.get('timestamp', int(time.time() * 1000)),
                                 ts_local=int(time.time() * 1000)
                             )
                             

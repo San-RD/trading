@@ -35,14 +35,15 @@ class SessionManager:
     
     def should_continue_session(self) -> bool:
         """Check if session should continue."""
-        # Check time limit
-        elapsed_hours = (time.time() - self.session_start) / 3600
-        if elapsed_hours >= self.session_duration_hours:
-            logger.info(f"Session time limit reached: {elapsed_hours:.1f}h elapsed")
-            return False
+        # Check time limit (0 = no time limit)
+        if self.session_duration_hours > 0:
+            elapsed_hours = (time.time() - self.session_start) / 3600
+            if elapsed_hours >= self.session_duration_hours:
+                logger.info(f"Session time limit reached: {elapsed_hours:.1f}h elapsed")
+                return False
         
-        # Check trade count limit
-        if self.session_trades >= self.max_trades:
+        # Check trade count limit (0 = no trade limit)
+        if self.max_trades > 0 and self.session_trades >= self.max_trades:
             logger.info(f"Session trade limit reached: {self.session_trades} trades")
             return False
         
@@ -88,8 +89,11 @@ class SessionManager:
         avg_spread = sum(trade['spread_bps'] for trade in self.trades_executed) / len(self.trades_executed) if self.trades_executed else 0
         avg_pnl = sum(trade['realized_pnl'] for trade in self.trades_executed) / len(self.trades_executed) if self.trades_executed else 0
         
+        # Handle unlimited sessions
+        duration_display = "Unlimited" if self.session_duration_hours == 0 else f"{elapsed_hours:.1f}h"
+        
         return {
-            'session_duration_hours': elapsed_hours,
+            'session_duration_hours': duration_display,
             'total_opportunities': len(self.opportunities_detected),
             'total_trades': self.session_trades,
             'successful_trades': successful_trades,
