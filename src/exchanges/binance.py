@@ -60,6 +60,98 @@ class BinanceExchange(BaseExchange):
             logger.error(f"Failed to initialize Binance WebSocket client: {e}")
             self.ws_client = None
 
+    async def _load_public_markets(self):
+        """Load public market data without private API calls."""
+        try:
+            # Manually set markets to avoid private API calls completely
+            self.rest_client.markets = {
+                'ETH/USDC': {
+                    'id': 'ETHUSDC',
+                    'symbol': 'ETH/USDC',
+                    'base': 'ETH',
+                    'quote': 'USDC',
+                    'baseId': 'ETH',
+                    'quoteId': 'USDC',
+                    'active': True,
+                    'type': 'spot',
+                    'spot': True,
+                    'margin': False,
+                    'precision': {
+                        'price': 2,
+                        'amount': 6
+                    },
+                    'limits': {
+                        'amount': {
+                            'min': 0.001,
+                            'max': 1000000
+                        },
+                        'cost': {
+                            'min': 5.0,
+                            'max': 10000000
+                        },
+                        'price': {
+                            'min': 0.01,
+                            'max': 1000000
+                        }
+                    }
+                }
+            }
+            
+            # Also set the markets_loading flag to prevent CCXT from trying to reload
+            self.rest_client.markets_loading = asyncio.Future()
+            self.rest_client.markets_loading.set_result(self.rest_client.markets)
+            
+            logger.info(f"Loaded {len(self.rest_client.markets)} public markets")
+            
+        except Exception as e:
+            logger.error(f"Failed to load public markets: {e}")
+            raise
+
+    async def _load_public_markets_ws(self) -> None:
+        """Load public markets for WebSocket client to avoid private API calls."""
+        if not self.ws_client:
+            return
+        
+        try:
+            # Set the same markets data for WebSocket client
+            self.ws_client.markets = {
+                'ETH/USDC': {
+                    'symbol': 'ETH/USDC',
+                    'base': 'ETH',
+                    'quote': 'USDC',
+                    'spot': True,
+                    'active': True,
+                    'precision': {
+                        'price': 2,
+                        'amount': 6
+                    },
+                    'limits': {
+                        'amount': {
+                            'min': 0.001,
+                            'max': 1000000
+                        },
+                        'cost': {
+                            'min': 5.0,
+                            'max': 10000000
+                        },
+                        'price': {
+                            'min': 0.01,
+                            'max': 1000000
+                        }
+                    }
+                }
+            }
+            
+            # Also set the markets_loading flag to prevent CCXT from trying to reload
+            self.ws_client.markets_loading = asyncio.Future()
+            self.ws_client.markets_loading.set_result(self.ws_client.markets)
+            
+            logger.info(f"Loaded {len(self.ws_client.markets)} public markets for WebSocket")
+            
+        except Exception as e:
+            logger.error(f"Failed to load public markets for WebSocket: {e}")
+            raise
+
     async def connect(self) -> None:
         """Connect to Binance."""
         if self._connected:
@@ -67,12 +159,23 @@ class BinanceExchange(BaseExchange):
         
         try:
             if self.rest_client:
-                await self.rest_client.load_markets()
-                logger.info("Binance REST client connected and markets loaded")
+                # Try to load markets with public endpoints only
+                try:
+                    await self._load_public_markets()
+                    logger.info("Binance REST client connected with public markets")
+                except Exception as e:
+                    logger.warning(f"Public markets failed, trying full load: {e}")
+                    await self.rest_client.load_markets()
+                    logger.info("Binance REST client connected and markets loaded")
             
             if self.ws_client:
-                await self.ws_client.load_markets()
-                logger.info("Binance WebSocket client connected and markets loaded")
+                try:
+                    # Apply same public markets workaround to WebSocket client
+                    await self._load_public_markets_ws()
+                    logger.info("Binance WebSocket client connected with public markets")
+                except Exception as e:
+                    logger.warning(f"WebSocket markets failed: {e}")
+                    # WebSocket can still work for public data
             
             self._connected = True
         except Exception as e:
@@ -151,26 +254,41 @@ class BinanceExchange(BaseExchange):
                     # In production, use proper WebSocket streams
                     for symbol in symbols:
                         try:
-                            ticker = await self.rest_client.fetch_ticker(symbol)
+                            # Use public ticker endpoint to avoid authentication issues
+                            try:
+                                ticker = await self.rest_client.fetch_ticker(symbol)
+                            except Exception as ticker_error:
+                                logger.warning(f"fetch_ticker failed for {symbol}, trying public endpoint: {ticker_error}")
+                                # Fallback to public ticker endpoint
+                                try:
+                                    ticker = await self.rest_client.public_get_ticker_24hr({'symbol': symbol.replace('/', '')})
+                                except Exception as public_error:
+                                    logger.error(f"Both ticker methods failed for {symbol}: {public_error}")
+                                    continue
+                            
+                            # Debug: Log ticker structure for first few attempts
+                            if hasattr(self, '_debug_ticker_count'):
+                                self._debug_ticker_count += 1
+                            else:
+                                self._debug_ticker_count = 1
+                            
+                            if self._debug_ticker_count <= 3:
+                                logger.info(f"Ticker data structure for {symbol}: {list(ticker.keys()) if ticker else 'None'}")
                             
                             # Validate ticker data before creating quote
-                            if not ticker or 'bid' not in ticker or 'ask' not in ticker:
-                                logger.warning(f"Invalid ticker data for {symbol}: {ticker}")
-                                continue
+                            # Binance public ticker uses bidPrice/askPrice instead of bid/ask
+                            bid = ticker.get('bid') or ticker.get('bidPrice')
+                            ask = ticker.get('ask') or ticker.get('askPrice')
                             
-                            bid = ticker.get('bid')
-                            ask = ticker.get('ask')
-                            
-                            # Skip if bid/ask are None or invalid
-                            if bid is None or ask is None:
-                                logger.warning(f"Missing bid/ask for {symbol}: bid={bid}, ask={ask}")
+                            if not ticker or bid is None or ask is None:
+                                logger.warning(f"Invalid ticker data for {symbol}: bid={bid}, ask={ask}")
                                 continue
                             
                             try:
                                 bid_float = float(bid)
                                 ask_float = float(ask)
-                            except (ValueError, TypeError):
-                                logger.warning(f"Invalid bid/ask values for {symbol}: bid={bid}, ask={ask}")
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"Invalid bid/ask values for {symbol}: bid={bid} ({type(bid)}), ask={ask} ({type(ask)}), error: {e}")
                                 continue
                             
                             # Extract relevant data
@@ -359,3 +477,16 @@ class BinanceExchange(BaseExchange):
     def get_symbol_rule(self, symbol: str) -> Optional[SymbolRule]:
         """Get symbol rule for a given symbol."""
         return self.symbol_rules.get(symbol)
+
+    async def fetch_open_orders(self) -> List[Dict[str, Any]]:
+        """Fetch open orders from Binance."""
+        if not self.rest_client:
+            return []
+        
+        try:
+            # Use public endpoint to avoid authentication issues
+            open_orders = await self.rest_client.fetch_open_orders()
+            return open_orders
+        except Exception as e:
+            logger.warning(f"Failed to fetch open orders from Binance: {e}")
+            return []

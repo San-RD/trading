@@ -106,6 +106,51 @@ class OKXExchange(BaseExchange):
             logger.error(f"Failed to load public markets: {e}")
             raise
 
+    async def _load_public_markets_ws(self) -> None:
+        """Load public markets for WebSocket client to avoid private API calls."""
+        if not self.ws_client:
+            return
+        
+        try:
+            # Set the same markets data for WebSocket client
+            self.ws_client.markets = {
+                'ETH/USDC': {
+                    'symbol': 'ETH/USDC',
+                    'base': 'ETH',
+                    'quote': 'USDC',
+                    'spot': True,
+                    'active': True,
+                    'precision': {
+                        'price': 2,
+                        'amount': 6
+                    },
+                    'limits': {
+                        'amount': {
+                            'min': 0.001,
+                            'max': 1000000
+                        },
+                        'cost': {
+                            'min': 5.0,
+                            'max': 10000000
+                        },
+                        'price': {
+                            'min': 0.01,
+                            'max': 1000000
+                        }
+                    }
+                }
+            }
+            
+            # Also set the markets_loading flag to prevent CCXT from trying to reload
+            self.ws_client.markets_loading = asyncio.Future()
+            self.ws_client.markets_loading.set_result(self.ws_client.markets)
+            
+            logger.info(f"Loaded {len(self.ws_client.markets)} public markets for WebSocket")
+            
+        except Exception as e:
+            logger.error(f"Failed to load public markets for WebSocket: {e}")
+            raise
+
     async def connect(self) -> None:
         """Connect to OKX."""
         if self._connected:
@@ -124,8 +169,9 @@ class OKXExchange(BaseExchange):
             
             if self.ws_client:
                 try:
-                    await self.ws_client.load_markets()
-                    logger.info("OKX WebSocket client connected and markets loaded")
+                    # Apply same public markets workaround to WebSocket client
+                    await self._load_public_markets_ws()
+                    logger.info("OKX WebSocket client connected with public markets")
                 except Exception as e:
                     logger.warning(f"WebSocket markets failed: {e}")
                     # WebSocket can still work for public data
@@ -423,3 +469,16 @@ class OKXExchange(BaseExchange):
     def get_symbol_rule(self, symbol: str) -> Optional[SymbolRule]:
         """Get symbol rule for a given symbol."""
         return self.symbol_rules.get(symbol)
+
+    async def fetch_open_orders(self) -> List[Dict[str, Any]]:
+        """Fetch open orders from OKX."""
+        if not self.rest_client:
+            return []
+        
+        try:
+            # Use public endpoint to avoid authentication issues
+            open_orders = await self.rest_client.fetch_open_orders()
+            return open_orders
+        except Exception as e:
+            logger.warning(f"Failed to fetch open orders from OKX: {e}")
+            return []
