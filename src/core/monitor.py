@@ -1,17 +1,19 @@
-"""Market monitor for websocket management and opportunity detection."""
+"""Market monitoring and opportunity detection."""
 
 import asyncio
 import time
-from typing import Dict, List, Optional, Set, AsyncGenerator
-from collections import defaultdict
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Set
 from loguru import logger
 
-from ..exchange.binance import BinanceClient
-from ..exchange.filters import SymbolRule
-from ..exchange.depth_model import DepthModel
-from .triangle import Triangle, find_triangles, calculate_triangle_edge
-from ..config import get_config
+from ..exchanges.base import Quote, OrderBook
+from ..exchanges.depth_model import DepthModel
+from .quotes import QuoteBus
+from .detector import ArbitrageDetector
+from .executor import ArbitrageExecutor
+from .risk import RiskManager
+from .session import SessionManager
+from .inventory import InventoryManager
+from .portfolio import PortfolioManager
 
 
 @dataclass

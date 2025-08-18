@@ -4,10 +4,11 @@ from .base import BaseExchange, Quote, OrderBook, Balance, OrderResult
 from .binance import BinanceExchange
 from .okx import OKXExchange
 from .filters import SymbolRule, round_price, round_qty, enforce_min_notional, validate_order_params
+from .depth_model import DepthModel, DepthLevel
 
 __all__ = [
     'BaseExchange',
-    'Quote', 
+    'Quote',
     'OrderBook',
     'Balance',
     'OrderResult',
@@ -17,5 +18,7 @@ __all__ = [
     'round_price',
     'round_qty',
     'enforce_min_notional',
-    'validate_order_params'
+    'validate_order_params',
+    'DepthModel',
+    'DepthLevel'
 ]

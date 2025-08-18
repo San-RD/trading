@@ -119,7 +119,6 @@ class BaseExchange(ABC):
     async def health_check(self) -> bool:
         """Perform health check."""
         pass
-
     def is_connected(self) -> bool:
         """Check if exchange is connected."""
         return self._connected
@@ -135,3 +134,4 @@ class BaseExchange(ABC):
     def get_maker_fee_bps(self) -> float:
         """Get maker fee in basis points."""
         return self.config.get('maker_fee_bps', 8.0)
+

@@ -1,9 +1,8 @@
-"""Test depth model and slippage estimation."""
+"""Test depth model functionality."""
 
 import pytest
 from decimal import Decimal
-
-from src.exchange.depth_model import DepthModel, DepthLevel
+from src.exchanges.depth_model import DepthModel, DepthLevel
 
 
 class TestDepthLevel:

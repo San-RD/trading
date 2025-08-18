@@ -1,13 +1,13 @@
-"""Triangle discovery and arbitrage calculation."""
+"""Triangle arbitrage detection and calculation."""
 
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, List, Tuple, Optional
 from decimal import Decimal
-import networkx as nx
+import asyncio
 from loguru import logger
 
-from ..exchange.filters import SymbolRule
-from ..exchange.fees import get_taker_fee_rate
-from ..exchange.depth_model import DepthModel
+from ..exchanges.depth_model import DepthModel
+from ..exchanges.base import Quote, OrderBook
+from .utils import calculate_spread_bps, calculate_edge_bps
 
 
 class Triangle:

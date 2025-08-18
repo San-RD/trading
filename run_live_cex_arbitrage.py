@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 """
-Live CEX↔CEX Arbitrage Bot Runner
-Binance ↔ OKX with ETH/USDT pair
+Live CEX<->CEX Arbitrage Bot Runner
+Dynamically configured from config.yaml
 
-Capital: $100 total ($25 per exchange, $25 per leg)
-Session: 2 hours
-Risk: 1% max daily loss, 0.3% max per trade loss
-Spread: 0.50% gross, ≥0.35% net after fees & slippage
+WARNING: This will use REAL MONEY!
 
-⚠️  WARNING: This will use REAL MONEY! ⚠️
-
-Usage: python run_live_cex_arbitrage.py
+Usage: python run_live_cex_arbitrage.py [--yes]
 """
 
 import asyncio
 import signal
 import sys
 import time
+import os
 from datetime import datetime
 from loguru import logger
 
@@ -31,6 +27,7 @@ class LiveCEXArbitrageRunner:
         self.bot = None
         self.running = False
         self.start_time = None
+        self.config = None
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -41,50 +38,112 @@ class LiveCEXArbitrageRunner:
         logger.info(f"Received signal {signum}, stopping live arbitrage...")
         self.running = False
     
+    def _get_capital_info(self):
+        """Get capital information from config."""
+        if not self.config:
+            return {}
+        
+        # Calculate total capital based on notional limits
+        daily_limit = getattr(self.config.risk, 'daily_notional_limit', 1000.0)
+        max_trades = self.config.risk.max_trades_per_day
+        avg_trade_size = daily_limit / max_trades if max_trades > 0 else daily_limit
+        
+        return {
+            'daily_limit': daily_limit,
+            'max_trades': max_trades,
+            'avg_trade_size': avg_trade_size,
+            'max_loss_pct': getattr(self.config.risk, 'max_daily_loss_pct', 1.0),
+            'max_trade_loss_pct': self.config.risk.max_loss_per_trade_pct
+        }
+    
+    def _get_session_info(self):
+        """Get session information from config."""
+        if not self.config:
+            return {}
+        
+        return {
+            'max_duration_min': getattr(self.config.session, 'max_duration_min', 90),
+            'max_trades': getattr(self.config.session, 'max_trades', 10),
+            'auto_stop': self.config.session.auto_stop,
+            'target_pairs': self.config.session.target_pairs
+        }
+    
+    def _get_detection_info(self):
+        """Get detection parameters from config."""
+        if not self.config:
+            return {}
+        
+        # Safely get realistic_trading config
+        realistic_config = getattr(self.config, 'realistic_trading', None)
+        min_net_edge = 0.0
+        if realistic_config:
+            min_net_edge = getattr(realistic_config, 'min_net_edge_after_slippage', 0.0)
+        
+        return {
+            'min_edge_bps': self.config.detector.min_edge_bps,
+            'max_spread_bps': self.config.detector.max_spread_bps,
+            'max_notional': getattr(self.config.detector, 'max_notional_usdc', 25.0),
+            'min_net_edge': min_net_edge
+        }
+    
     async def run_live_arbitrage(self):
         """Run the live CEX↔CEX arbitrage."""
         try:
-            logger.warning("🚨 LIVE CEX ARBITRAGE MODE - REAL MONEY WILL BE USED! 🚨")
+            # Load configuration first
+            self.config = Config.load_from_file("config.yaml")
+            
+            # Get dynamic configuration values
+            capital_info = self._get_capital_info()
+            session_info = self._get_session_info()
+            detection_info = self._get_detection_info()
+            
+            logger.warning("LIVE CEX ARBITRAGE MODE - REAL MONEY WILL BE USED!")
             logger.info("=" * 80)
             logger.info("LIVE CEX ARBITRAGE CONFIRMATION REQUIRED:")
-            logger.info("  Mode: LIVE CEX↔CEX ARBITRAGE (REAL MONEY)")
-            logger.info("  Pair: ETH/USDT ONLY")
-            logger.info("  Exchanges: Binance ↔ OKX")
-            logger.info("  Capital: $100 total ($25 per exchange)")
-            logger.info("  Position Size: $25 max per leg")
-            logger.info("  Session Duration: 2 hours maximum")
-            logger.info("  Spread Threshold: 0.50% gross, ≥0.35% net")
-            logger.info("  Risk Profile: 1% max daily loss, 0.3% max per trade")
-            logger.info("  Rebalancing: Auto 50% USDC / 50% ETH on each exchange")
+            logger.info("  Mode: LIVE CEX<->CEX ARBITRAGE (REAL MONEY)")
+            logger.info(f"  Pairs: {', '.join(session_info.get('target_pairs', ['ETH/USDC']))}")
+            logger.info("  Exchanges: Binance <-> OKX")
+            logger.info(f"  Daily Notional Limit: ${capital_info.get('daily_limit', 0):,.0f}")
+            logger.info(f"  Max Trades Per Day: {capital_info.get('max_trades', 0)}")
+            logger.info(f"  Max Position Size: ${detection_info.get('max_notional', 0)} per leg")
+            logger.info(f"  Session Duration: {session_info.get('max_duration_min', 0)} minutes maximum")
+            logger.info(f"  Min Edge Required: {detection_info.get('min_edge_bps', 0)} bps (0.{detection_info.get('min_edge_bps', 0)/100:.2f}%)")
+            logger.info(f"  Max Spread Ignore: {detection_info.get('max_spread_bps', 0)} bps (ignore markets wider than {detection_info.get('max_spread_bps', 0)/100:.2f}%)")
+            if detection_info.get('min_net_edge', 0) > 0:
+                logger.info(f"  Net Edge After Slippage: {detection_info.get('min_net_edge', 0)} bps minimum")
+            elif detection_info.get('min_net_edge', 0) < 0:
+                logger.info(f"  Net Edge After Slippage: {detection_info.get('min_net_edge', 0)} bps (allows small losses)")
+            logger.info(f"  Risk Profile: {capital_info.get('max_loss_pct', 0)}% max daily loss, {capital_info.get('max_trade_loss_pct', 0)}% max per trade")
             logger.info("=" * 80)
             
             # Final confirmation
-            confirm = input("\n🚨 Type 'LIVE CEX' to confirm live arbitrage with real money: ")
+            if "--yes" in sys.argv or os.environ.get("LIVE_CEX_CONFIRM") == "1":
+                confirm = "LIVE CEX"
+            else:
+                confirm = input("\nType 'LIVE CEX' to confirm live arbitrage with real money: ")
             if confirm != "LIVE CEX":
-                logger.info("❌ Live arbitrage cancelled by user")
+                logger.info("Live arbitrage cancelled by user")
                 return
             
-            logger.info("✅ Live CEX arbitrage confirmed!")
-            logger.info("🚀 Starting Live CEX↔CEX Arbitrage Bot...")
-            
-            # Load configuration
-            config = Config.load_from_file("config.yaml")
+            logger.info("Live CEX arbitrage confirmed!")
+            logger.info("Starting Live CEX<->CEX Arbitrage Bot...")
             
             # Verify live trading settings
-            if config.exchanges.accounts["binance"].sandbox:
-                logger.error("❌ Binance is in sandbox mode! Cannot trade live!")
+            if self.config.exchanges.accounts["binance"].sandbox:
+                logger.error("Binance is in sandbox mode! Cannot trade live!")
                 return
             
-            if config.exchanges.accounts["okx"].sandbox:
-                logger.error("❌ OKX is in sandbox mode! Cannot trade live!")
+            if self.config.exchanges.accounts["okx"].sandbox:
+                logger.error("OKX is in sandbox mode! Cannot trade live!")
                 return
             
             # Verify capital allocation
-            logger.info("💰 Verifying capital allocation requirements...")
-            logger.info("  Binance: $25 USDC + $25 ETH")
-            logger.info("  OKX: $25 USDC + $25 ETH")
-            logger.info("  Total: $100 capital")
-            logger.info("  Position size: $25 per leg")
+            logger.info("Verifying capital allocation requirements...")
+            max_notional = detection_info.get('max_notional', 0)
+            logger.info(f"  Binance: ${max_notional} USDC + ${max_notional} ETH")
+            logger.info(f"  OKX: ${max_notional} USDC + ${max_notional} ETH")
+            logger.info(f"  Daily limit: ${capital_info.get('daily_limit', 0):,.0f} total notional")
+            logger.info(f"  Position size: ${max_notional} per leg")
             
             # Initialize bot
             self.bot = CrossExchangeArbBot("config.yaml")
@@ -98,20 +157,20 @@ class LiveCEXArbitrageRunner:
             await self._monitor_live_session()
             
         except Exception as e:
-            logger.error(f"❌ Live arbitrage failed: {e}")
+            logger.error(f"Live arbitrage failed: {e}")
             raise
         finally:
             await self._cleanup()
     
     async def _monitor_live_session(self):
         """Monitor the live arbitrage session."""
-        logger.info("📊 Monitoring live CEX↔CEX arbitrage session...")
+        logger.info("Monitoring live CEX<->CEX arbitrage session...")
         
         while self.running:
             try:
                 # Check if session should continue
                 if not self.bot.session_manager.should_continue_session():
-                    logger.info("⏰ Session ended naturally")
+                    logger.info("Session ended naturally")
                     break
                 
                 # Log status every minute for live arbitrage
@@ -120,18 +179,26 @@ class LiveCEXArbitrageRunner:
                     
                     # Additional live arbitrage status
                     elapsed_hours = (time.time() - self.start_time) / 3600
-                    logger.info(f"⏱️  Live arbitrage session: {elapsed_hours:.2f} hours elapsed")
+                    logger.info(f"Live arbitrage session: {elapsed_hours:.2f} hours elapsed")
                     
-                    # Log current capital status
-                    logger.info("💰 Current Capital Status:")
-                    logger.info("  Position size limit: $25 per leg")
-                    logger.info("  Max daily loss: $1 (1% of $100)")
-                    logger.info("  Max per trade loss: $0.075 (0.3% of $25)")
+                    # Log current capital status from config
+                    capital_info = self._get_capital_info()
+                    detection_info = self._get_detection_info()
+                    
+                    logger.info("Current Capital Status:")
+                    logger.info(f"  Position size limit: ${detection_info.get('max_notional', 0)} per leg")
+                    max_daily_loss = (capital_info.get('daily_limit', 0) * capital_info.get('max_loss_pct', 0) / 100)
+                    logger.info(f"  Max daily loss: ${max_daily_loss:.2f} ({capital_info.get('max_loss_pct', 0)}% of ${capital_info.get('daily_limit', 0):,.0f})")
+                    max_trade_loss = (detection_info.get('max_notional', 0) * capital_info.get('max_trade_loss_pct', 0) / 100)
+                    logger.info(f"  Max per trade loss: ${max_trade_loss:.4f} ({capital_info.get('max_trade_loss_pct', 0)}% of ${detection_info.get('max_notional', 0)})")
                 
-                # Check for manual stop conditions
-                elapsed_hours = (time.time() - self.start_time) / 3600
-                if elapsed_hours >= 2.0:  # Stop after 2 hours max
-                    logger.info("⏰ Maximum arbitrage session duration reached (2 hours)")
+                # Check for manual stop conditions from config
+                session_info = self._get_session_info()
+                elapsed_minutes = (time.time() - self.start_time) / 60
+                max_duration = session_info.get('max_duration_min', 0)
+                
+                if max_duration > 0 and elapsed_minutes >= max_duration:
+                    logger.info(f"Maximum arbitrage session duration reached ({max_duration} minutes)")
                     break
                 
                 await asyncio.sleep(30)  # Check every 30 seconds for live arbitrage
@@ -150,7 +217,7 @@ class LiveCEXArbitrageRunner:
             if self.bot and self.bot.session_manager:
                 summary = self.bot.session_manager.get_session_summary()
                 
-                logger.info("🎯 Live CEX↔CEX Arbitrage Session Complete!")
+                logger.info("Live CEX<->CEX Arbitrage Session Complete!")
                 logger.info("=" * 80)
                 logger.info("Final Live Arbitrage Results:")
                 logger.info(f"  Duration: {summary['session_duration_hours']:.2f} hours")
@@ -160,9 +227,8 @@ class LiveCEXArbitrageRunner:
                 logger.info(f"  Average PnL per trade: ${summary['avg_pnl_per_trade']:.4f}")
                 logger.info(f"  Opportunities detected: {summary['total_opportunities']}")
                 logger.info("=" * 80)
-                logger.info("💰 REAL MONEY WAS TRADED!")
-                logger.info("📊 Check your exchange accounts for actual positions")
-                logger.info("🔄 Verify 50% USDC / 50% ETH ratio on both exchanges")
+                logger.info("REAL MONEY WAS TRADED!")
+                logger.info("Check your exchange accounts for actual positions")
                 
                 # Export results
                 csv_file = await self.bot.session_manager.export_results_csv()
@@ -191,7 +257,7 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(
         sys.stdout,
-        format="<red>{time:HH:mm:ss}</red> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        format="{time:HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
         level="INFO"
     )
     logger.add(
@@ -201,5 +267,5 @@ if __name__ == "__main__":
         rotation="1 day"
     )
     
-    # Run the live CEX↔CEX arbitrage bot
+    # Run the live CEX<->CEX arbitrage bot
     asyncio.run(main())

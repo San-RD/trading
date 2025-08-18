@@ -73,7 +73,7 @@ class CrossExchangeArbBot:
         
         # Initialize Binance
         try:
-            exchanges['binance'] = BinanceExchange(self.config)
+            exchanges['binance'] = BinanceExchange("binance", self.config.model_dump())
             logger.info("Binance exchange initialized")
         except Exception as e:
             logger.error(f"Failed to initialize Binance: {e}")
@@ -81,7 +81,7 @@ class CrossExchangeArbBot:
         
         # Initialize OKX
         try:
-            exchanges['okx'] = OKXExchange(self.config)
+            exchanges['okx'] = OKXExchange("okx", self.config.model_dump())
             logger.info("OKX exchange initialized")
         except Exception as e:
             logger.error(f"Failed to initialize OKX: {e}")
@@ -127,10 +127,13 @@ class CrossExchangeArbBot:
         logger.info(f"Max notional: ${self.config.detector.max_notional_usdt:,.2f}")
         
         try:
+            # Determine target symbols from config for initial connection
+            symbols = list(self.config.session.target_pairs) if getattr(self.config.session, 'target_pairs', None) else ["ETH/USDC"]
+
             # Connect to exchanges
             for name, exchange in self.exchanges.items():
                 try:
-                    await exchange.connect()
+                    await exchange.connect(symbols)
                     logger.info(f"Connected to {name}")
                 except Exception as e:
                     logger.error(f"Failed to connect to {name}: {e}")
