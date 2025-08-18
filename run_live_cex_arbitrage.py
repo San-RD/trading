@@ -82,7 +82,7 @@ class LiveCEXArbitrageRunner:
         return {
             'min_edge_bps': self.config.detector.min_edge_bps,
             'max_spread_bps': self.config.detector.max_spread_bps,
-            'max_notional': getattr(self.config.detector, 'max_notional_usdc', 25.0),
+            'max_notional': getattr(self.config.detector, 'max_notional_usdt', 25.0),
             'min_net_edge': min_net_edge
         }
     
