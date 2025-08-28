@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-Main entry point for the arbitrage bot with parallel strategy support.
-Supports multiple routes and strategy types without touching existing code.
+Multi-Strategy Arbitrage Bot Orchestrator
+
+This script runs ALL enabled strategies simultaneously:
+- ETH/USDC: Binance spot ↔ Hyperliquid perp
+- BTC/USDC: Binance spot ↔ Hyperliquid perp
+
+For single strategies, use:
+- run_eth_spot_perp.py    # ETH/USDC only
+- run_btc_spot_perp.py    # BTC/USDC only
 """
 
 import asyncio
@@ -12,12 +19,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 async def main():
-    """Main entry point for the arbitrage bot."""
+    """Main entry point for the multi-strategy arbitrage bot."""
     try:
         from src.strategies.orchestrator import StrategyOrchestrator
         from src.config import Config
         
-        print("🚀 Starting Arbitrage Bot with Parallel Strategy Support...")
+        print("🚀 Starting Multi-Strategy Arbitrage Bot...")
+        print("=" * 60)
+        print("📊 Running ALL enabled strategies simultaneously:")
+        print("   • ETH/USDC: Binance Spot ↔ Hyperliquid Perp")
+        print("   • BTC/USDC: Binance Spot ↔ Hyperliquid Perp")
         print("=" * 60)
         
         # Load configuration

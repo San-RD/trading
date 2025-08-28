@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
-DEPRECATED: Use run_eth_spot_perp.py or run_btc_spot_perp.py instead
+ETH Spot↔Perp Arbitrage Strategy
 
-This file is kept for backward compatibility but is deprecated.
-Please use the specific strategy files for clarity.
-
-- run_eth_spot_perp.py    # ETH/USDC spot↔perp only
-- run_btc_spot_perp.py    # BTC/USDC spot↔perp only  
-- run_arbitrage_bot.py    # Both strategies simultaneously
+This script runs ONLY the ETH/USDC spot↔perp strategy:
+- Binance ETH/USDC spot ↔ Hyperliquid ETH-PERP perpetual
 """
 
 import asyncio
@@ -23,18 +19,14 @@ from src.config import Config, RouteConfig
 
 
 async def main():
-    """Main entry point for ETH spot↔perp strategy (deprecated)."""
-    print("⚠️  DEPRECATED: This file is deprecated!")
-    print("📁 Please use run_eth_spot_perp.py instead for clarity.")
-    print("=" * 50)
-    
+    """Main entry point for ETH spot↔perp strategy."""
     try:
         # Load configuration from file
         config = Config.load_from_file("config.yaml")
         
         # Create ETH/USDC route configuration
         route = RouteConfig(
-            name="ETH_binance_spot__hl_perp_deprecated",
+            name="ETH_binance_spot__hl_perp",
             enabled=True,
             strategy_type="spot_perp",
             left={"ex": "binance", "type": "spot", "symbol": "ETH/USDC"},
@@ -44,12 +36,12 @@ async def main():
         # Create and start the strategy runner with the route
         runner = SpotPerpRunner(config, route)
         
-        print("🚀 Starting ETH Spot↔Perp Arbitrage Strategy (DEPRECATED)...")
+        print("🚀 Starting ETH Spot↔Perp Arbitrage Strategy...")
         print(f"📊 Strategy: Binance ETH/USDC Spot ↔ Hyperliquid ETH-PERP")
         print(f"💰 Min Edge: {config.detector.min_edge_bps} bps")
         print(f"🔒 Risk Limit: ${config.risk.daily_notional_limit} daily notional")
         print(f"🪙 Trading Pair: {route.left['symbol']} ↔ {route.right['symbol']}")
-        print("=" * 50)
+        print("=" * 60)
         
         # Start the strategy
         await runner.start()
