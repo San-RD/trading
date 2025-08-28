@@ -59,6 +59,7 @@ class ExecutionConfig(BaseModel):
     max_leg_latency_ms: int = 150  # Reduced for faster execution
     hedge: Dict[str, bool] = Field(default_factory=lambda: {"atomic": True, "cancel_on_partial": True})
     partial_fill_threshold: float = 0.95  # New: threshold for partial fill handling
+    per_order_cap_usd: float = 15.0  # Maximum USD per order
 
 
 class InventoryConfig(BaseModel):
@@ -108,6 +109,7 @@ class DepthModelConfig(BaseModel):
     max_depth_pct: float = 0.20  # Max 0.20% from midprice for aggregation
     vwap_calculation_levels: int = 10  # Use L1-L10 for VWAP calculation
     per_order_cap_usdc: float = 1000.0  # Split orders larger than $1k
+    safety_factor: float = 0.80  # Use 80% of available liquidity for safety
 
 
 class RealisticTradingConfig(BaseModel):
@@ -146,6 +148,12 @@ class BacktestConfig(BaseModel):
     end_ts: Optional[int] = None
 
 
+class PerpConfig(BaseModel):
+    """Perpetual futures configuration."""
+    max_hold_minutes: int = 10
+    funding_cost_bps_per_8h: float = 0.0
+    require_funding_sign_ok: bool = False
+
 class AlertConfig(BaseModel):
     """Alert configuration."""
     telegram_token: str
@@ -176,6 +184,20 @@ class ServerConfig(BaseModel):
     port: int = 8080
 
 
+class HyperliquidConfig(BaseModel):
+    """Hyperliquid exchange configuration."""
+    wallet_address: str
+    private_key: str
+    chain: str = "arbitrum"
+    initial_capital_usdc: float = 50.0
+
+class RouteConfig(BaseModel):
+    """Route configuration for arbitrage strategies."""
+    name: str
+    enabled: bool = True
+    left: Dict[str, str]
+    right: Dict[str, str]
+
 class Config(BaseModel):
     """Main configuration model."""
     exchanges: ExchangeConfig
@@ -188,10 +210,13 @@ class Config(BaseModel):
     depth_model: DepthModelConfig
     realistic_trading: RealisticTradingConfig
     session: SessionConfig
+    hyperliquid: HyperliquidConfig
+    perp: PerpConfig = Field(default_factory=PerpConfig)
     alerts: Optional[AlertConfig] = None
     storage: StorageConfig = Field(default_factory=StorageConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    routes: Optional[List[RouteConfig]] = None
 
     def get_taker_fee_bps(self, exchange: str) -> float:
         """Get taker fee in basis points for an exchange."""
