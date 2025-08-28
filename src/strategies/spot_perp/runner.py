@@ -11,7 +11,7 @@ from .planner import SpotPerpPlanner, ExecutionPlan, ExecutionLeg
 from src.exchanges.binance import BinanceExchange
 from src.exchanges.hyperliquid import HyperliquidExchange
 from src.notify.telegram_readonly import TelegramReadOnlyNotifier, TelegramConfig
-from src.config import Config
+from src.config import Config, RouteConfig
 
 
 @dataclass
@@ -30,8 +30,9 @@ class StrategyState:
 class SpotPerpRunner:
     """Main runner for the spot↔perp arbitrage strategy."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, route: RouteConfig):
         self.config = config
+        self.route = route
         self.state = StrategyState()
         
         # Initialize components with error handling
@@ -70,6 +71,12 @@ class SpotPerpRunner:
         self.daily_notional = 0.0
         self.consecutive_losses = 0
         self.daily_loss = 0.0
+        
+        # Route-specific configuration
+        self.spot_symbol = route.left['symbol']
+        self.perp_symbol = route.right['symbol']
+        self.spot_exchange_name = route.left['ex']
+        self.perp_exchange_name = route.right['ex']
 
     async def start(self):
         """Start the spot↔perp strategy."""
@@ -183,14 +190,14 @@ class SpotPerpRunner:
             # Initialize Binance (spot) - support both ETH and BTC
             logger.info("🔌 Connecting to Binance spot exchange...")
             self.spot_exchange = BinanceExchange("binance", self.config.dict())
-            await self.spot_exchange.connect(["ETH/USDC", "BTC/USDC"])
-            logger.info("✅ Binance spot exchange connected (ETH/USDC, BTC/USDC)")
+            await self.spot_exchange.connect([self.spot_symbol])
+            logger.info(f"✅ Binance spot exchange connected ({self.spot_symbol})")
             
             # Initialize Hyperliquid (perp) - support both ETH and BTC
             logger.info("🔌 Connecting to Hyperliquid perp exchange...")
             self.perp_exchange = HyperliquidExchange("hyperliquid", self.config.dict())
-            await self.perp_exchange.connect(["ETH-PERP", "BTC-PERP"])
-            logger.info("✅ Hyperliquid perp exchange connected (ETH-PERP, BTC-PERP)")
+            await self.perp_exchange.connect([self.perp_symbol])
+            logger.info(f"✅ Hyperliquid perp exchange connected ({self.perp_symbol})")
             
         except Exception as e:
             logger.error(f"Error initializing exchanges: {e}")
@@ -214,7 +221,7 @@ class SpotPerpRunner:
     async def _stream_spot_quotes(self):
         """Stream spot quotes from Binance."""
         try:
-            async for quote in self.spot_exchange.watch_quotes(["ETH/USDC", "BTC/USDC"]):
+            async for quote in self.spot_exchange.watch_quotes([self.spot_symbol]):
                 # Store quotes by symbol
                 if not hasattr(self, 'spot_quotes_by_symbol'):
                     self.spot_quotes_by_symbol = {}
@@ -228,7 +235,7 @@ class SpotPerpRunner:
     async def _stream_perp_quotes(self):
         """Stream perp quotes from Hyperliquid."""
         try:
-            async for quote in self.perp_exchange.watch_quotes(["ETH-PERP", "BTC-PERP"]):
+            async for quote in self.perp_exchange.watch_quotes([self.perp_symbol]):
                 # Store quotes by symbol
                 if not hasattr(self, 'perp_quotes_by_symbol'):
                     self.perp_quotes_by_symbol = {}

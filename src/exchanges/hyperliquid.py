@@ -625,6 +625,23 @@ class HyperliquidExchange(BaseExchange):
             logger.error(f"Failed to fetch funding rate for {symbol}: {e}")
             return None
 
+    async def test_connectivity(self) -> bool:
+        """Test basic network connectivity to Hyperliquid."""
+        try:
+            if not self.http_session:
+                return False
+                
+            # Simple ping test
+            async with self.http_session.get(
+                f"{self.base_url}/ping",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                return response.status == 200
+                
+        except Exception as e:
+            logger.warning(f"Connectivity test failed: {e}")
+            return False
+
     async def health_check(self) -> bool:
         """Perform health check."""
         try:

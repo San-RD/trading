@@ -197,6 +197,7 @@ class RouteConfig(BaseModel):
     enabled: bool = True
     left: Dict[str, str]
     right: Dict[str, str]
+    strategy_type: str = "spot_spot"  # spot_spot, spot_perp, perp_perp
 
 class Config(BaseModel):
     """Main configuration model."""
