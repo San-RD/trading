@@ -5,8 +5,8 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from loguru import logger
 
-from ..exchanges.base import BaseExchange, Balance
-from ..config import Config
+from src.exchanges.base import BaseExchange, Balance
+from src.config import Config
 
 
 @dataclass

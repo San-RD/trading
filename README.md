@@ -1,203 +1,139 @@
-# 🚀 Live CEX↔CEX Arbitrage Bot
+# Cross-Exchange Arbitrage Bot
 
-A high-performance, latency-aware cross-exchange arbitrage bot that detects price gaps between **Binance Spot** and **OKX Spot**, executes simultaneous taker orders, and provides comprehensive risk management.
+A high-performance, low-latency arbitrage bot for cryptocurrency exchanges with real-time monitoring and market intelligence.
 
-## ⚠️ **IMPORTANT: LIVE TRADING BOT**
+## 🚀 Features
 
-**This bot is configured for LIVE TRADING with REAL MONEY.** It includes comprehensive risk management but should be used with caution.
+### Core Trading Bot
+- **Ultra-low latency** arbitrage detection and execution
+- **Multi-exchange support** (Binance, Kraken)
+- **Real-time order book** monitoring
+- **Risk management** with configurable limits
+- **Depth-aware** trade sizing and execution
 
-## 🎯 **Key Features**
+### Monitoring & Intelligence
+- **Telegram monitoring bot** for real-time status (runs 24/7)
+- **Performance analytics** (daily/weekly/monthly summaries)
+- **Market intelligence** tracking (whale movements, volume spikes)
+- **Database logging** for performance analysis
 
-- **Real-time Arbitrage Detection**: Monitors price differences between exchanges in real-time
-- **Multi-Exchange Support**: Currently supports Binance and OKX
-- **Live Trading Mode**: Execute real arbitrage trades with risk controls
-- **Risk Management**: Comprehensive risk controls with dynamic parameter adjustment
-- **Telegram Integration**: Real-time notifications and bot control
-- **Inventory Management**: Automatic rebalancing suggestions across exchanges
-- **Session Management**: Time-limited trading sessions with auto-stop
-
-## 🏗️ **Architecture**
+## 📁 Project Structure
 
 ```
 tri_arb_bot/
-├── src/
-│   ├── exchanges/          # Exchange integrations
-│   │   ├── base.py        # Base exchange interface
-│   │   ├── binance.py     # Binance implementation
-│   │   ├── okx.py         # OKX implementation
-│   │   ├── filters.py     # Trading rules & precision
-│   │   └── fees.py        # Fee management
-│   ├── core/              # Core arbitrage logic
-│   │   ├── symbols.py     # Symbol universe management
-│   │   ├── quotes.py      # Quote consolidation & WebSocket
-│   │   ├── detector.py    # Arbitrage opportunity detection
-│   │   ├── executor.py    # Trade execution
-│   │   ├── inventory.py   # Balance & rebalancing
-│   │   ├── risk.py        # Risk management
-│   │   └── session.py     # Session management
-│   ├── storage/           # Data persistence
-│   │   ├── db.py          # SQLite database
-│   │   ├── models.py      # Data models
-│   │   └── journal.py     # Trade journaling
-│   ├── alerts/            # Notifications
-│   │   └── telegram.py    # Telegram bot
-│   ├── config.py          # Configuration management
-│   └── main.py            # Main entry point & CLI
-├── run_live_cex_arbitrage.py  # Live trading runner
-├── config.yaml            # Configuration file (create from template)
-├── requirements.txt       # Python dependencies
-└── README.md             # This file
+├── src/                          # Core bot source code
+│   ├── core/                     # Core arbitrage logic
+│   ├── exchanges/                # Exchange integrations
+│   ├── storage/                  # Database and data models
+│   └── alerts/                   # Monitoring and alerts
+├── run_live_cex_arbitrage.py    # Main trading bot (start when needed)
+├── run_monitoring_bot.py         # Telegram monitoring bot (runs 24/7)
+├── start_monitoring.py           # Startup script for monitoring bot
+├── config.yaml                   # Configuration file
+├── requirements.txt              # Python dependencies
+└── README.md                     # This file
 ```
 
-## 🚀 **Quick Start**
+## 🛠️ Setup
 
-### **1. Clone the Repository**
-```bash
-git clone <your-github-repo-url>
-cd tri_arb_bot
-```
-
-### **2. Install Dependencies**
+### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### **3. Configure the Bot**
+### 2. Configure Exchanges
+Copy `env.example` to `.env` and fill in your API keys:
 ```bash
-# Copy the template configuration
-cp config.template.yaml config.yaml
-
-# Edit config.yaml with your API keys and settings
-# ⚠️ NEVER commit config.yaml to git!
+cp env.example .env
 ```
 
-### **4. Set Up API Keys**
-Create a `config.yaml` file with your exchange API credentials:
+### 3. Configure Bot
+Edit `config.yaml` with your trading parameters:
+- Risk limits
+- Trading pairs
+- Fee structures
+- Execution settings
 
-```yaml
-exchanges:
-  left: "binance"
-  right: "okx"
-  accounts:
-    binance:
-      key: "YOUR_BINANCE_API_KEY"
-      secret: "YOUR_BINANCE_SECRET"
-      sandbox: false  # Set to true for testing
-    okx:
-      key: "YOUR_OKX_API_KEY"
-      secret: "YOUR_OKX_SECRET"
-      password: "YOUR_OKX_PASSPHRASE"
-      sandbox: false  # Set to true for testing
+### 4. Start Monitoring Bot (24/7)
+The monitoring bot runs continuously to track performance:
+```bash
+python start_monitoring.py
 ```
 
-### **5. Run the Bot**
-
-**Live Trading (REAL MONEY):**
+### 5. Start Trading Bot (When Needed)
+Start the live trading bot only when you want to trade:
 ```bash
 python run_live_cex_arbitrage.py
 ```
 
-**Paper Trading (Simulation):**
-```bash
-py -m src.main run --mode paper
-```
+## 📊 Configuration
 
-## ⚙️ **Configuration**
+### Key Parameters
+- **`min_edge_bps`**: Minimum arbitrage edge (basis points)
+- **`max_daily_notional`**: Maximum daily trading volume
+- **`max_trades_per_day`**: Maximum trades per day
+- **`guard_bps`**: Slippage protection buffer
 
-### **Risk Management**
-- **Max Daily Loss**: 1% of total balance
-- **Max Per Trade Loss**: 0.3% of position size
-- **Position Size**: $25 max per leg
-- **Session Duration**: 2 hours maximum
-- **Circuit Breakers**: Stop after 2 consecutive losses
+### Risk Management
+- **Daily loss limits**
+- **Position size caps**
+- **Consecutive loss protection**
+- **Drawdown monitoring**
 
-### **Trading Parameters**
-- **Spread Threshold**: 0.50% gross, ≥0.35% net after fees & slippage
-- **Target Pairs**: ETH/USDT only
-- **Capital Allocation**: $100 total ($25 per exchange)
-- **Rebalancing**: Auto 50% USDC / 50% ETH ratio
+## 🔧 Architecture
 
-## 🛡️ **Safety Features**
+### Performance Optimizations
+- **WebSocket connections** for real-time data
+- **Async/await** for non-blocking operations
+- **Database indexing** for fast queries
+- **Memory-efficient** data structures
 
-- **Sandbox Mode**: Test with paper trading first
-- **Risk Limits**: Multiple layers of risk controls
-- **Session Limits**: Automatic time-based stopping
-- **Position Sizing**: Conservative position limits
-- **Circuit Breakers**: Automatic stop on consecutive losses
+### Monitoring System
+- **Real-time status** updates
+- **Performance metrics** tracking
+- **Market intelligence** alerts
+- **Telegram integration** for mobile access
 
-## 📊 **Monitoring & Alerts**
+## 📈 Usage
 
-- **Real-time Logging**: Comprehensive trade and risk logging
-- **Telegram Notifications**: Instant alerts for trades and risk events
-- **Session Summary**: Detailed performance reports
-- **CSV Export**: Complete trade history export
+### Monitoring Bot (24/7)
+The monitoring bot runs continuously and provides:
+- Real-time trading bot status
+- Performance summaries
+- Market intelligence alerts
+- Telegram notifications
 
-## 🔧 **Development**
+### Trading Bot (On-Demand)
+The live trading bot:
+- Runs only when you start it
+- Monitors for arbitrage opportunities
+- Executes trades automatically
+- Stops when you close it
 
-### **Running Tests**
-```bash
-# Test configuration
-python -c "from src.config import Config; print('Config OK')"
+### Monitoring Bot Commands
+- `/start` - Main menu
+- `/status` - Current trading status
+- `/daily` - Daily performance summary
+- `/weekly` - Weekly performance summary
+- `/monthly` - Monthly performance summary
+- `/whales` - Whale movement alerts
+- `/market` - Market intelligence summary
 
-# Test detector
-python -c "from src.core.detector import ArbitrageDetector; print('Detector OK')"
-```
+## 🚨 Important Notes
 
-### **Adding New Exchanges**
-1. Create new exchange class in `src/exchanges/`
-2. Inherit from `BaseExchange`
-3. Implement required methods
-4. Add to configuration
+- **Monitoring bot runs 24/7** - Always available for status updates
+- **Trading bot starts on-demand** - Only runs when you need it
+- **Monitor risk limits** carefully
+- **Keep API keys secure**
+- **Regular performance review** recommended
 
-## ⚠️ **Important Notes**
+## 📞 Support
 
-### **Security**
-- **NEVER commit `config.yaml`** to git (contains API keys)
-- Use environment variables for sensitive data in production
-- Regularly rotate API keys
-- Monitor API usage and permissions
+For issues or questions:
+1. Check the logs in the `logs/` directory
+2. Review configuration in `config.yaml`
+3. Monitor bot status via Telegram
 
-### **Risk Disclaimer**
-- This bot trades with **REAL MONEY**
-- Cryptocurrency trading involves significant risk
-- Past performance does not guarantee future results
-- Use at your own risk and never invest more than you can afford to lose
+## 📄 License
 
-### **Legal Compliance**
-- Ensure compliance with local regulations
-- Check exchange terms of service
-- Consider tax implications of trading
-
-## 📝 **License**
-
-This project is for educational and personal use. Please ensure compliance with all applicable laws and regulations.
-
-## 🤝 **Contributing**
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📞 **Support**
-
-For issues and questions:
-1. Check the logs for error details
-2. Review the configuration
-3. Test with paper trading first
-4. Open an issue on GitHub
-
-## 🚨 **Emergency Stop**
-
-If you need to stop the bot immediately:
-- Press `Ctrl+C` in the terminal
-- The bot will attempt graceful shutdown
-- Check exchange positions manually
-- Verify all orders are properly closed
-
----
-
-**Happy Trading! 🚀📈**
-
-*Remember: This bot uses REAL MONEY. Trade responsibly!*
+This project is for educational and personal use. Use at your own risk.

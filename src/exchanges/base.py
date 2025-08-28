@@ -62,6 +62,7 @@ class OrderResult:
     fee_amount: float = 0.0
     error: Optional[str] = None
     latency_ms: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class BaseExchange(ABC):
@@ -74,7 +75,7 @@ class BaseExchange(ABC):
         self._last_update = 0
 
     @abstractmethod
-    async def connect(self) -> None:
+    async def connect(self, symbols: List[str]) -> bool:
         """Connect to the exchange."""
         pass
 

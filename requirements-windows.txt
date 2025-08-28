@@ -13,3 +13,5 @@ aiosqlite>=0.19.0
 click>=8.0.0
 asyncio-mqtt>=0.16.0
 networkx>=3.0.0
+krakenex==2.1.0
+pykrakenapi==0.3.2

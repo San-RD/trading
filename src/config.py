@@ -30,9 +30,10 @@ class FeeConfig(BaseModel):
 
 class SymbolConfig(BaseModel):
     """Symbol configuration."""
-    quote_assets: List[str] = ["USDT", "USDC"]
+    quote_assets: List[str] = ["USDC"]
     whitelist: List[str] = ["BTC", "ETH", "SOL", "XRP", "ARB", "OP"]
     blacklist: List[str] = []
+    prefer_stable: str = "USDC"
 
 
 class DetectorConfig(BaseModel):
@@ -40,10 +41,15 @@ class DetectorConfig(BaseModel):
     min_edge_bps: float = 28.0  # Updated to realistic threshold
     min_book_bbo_age_ms: int = 300  # Reduced for faster detection
     max_spread_bps: float = 15.0  # Tighter spreads
-    max_notional_usdt: float = 10000.0
-    prefer_stable: str = "USDT"
+    max_notional_usdc: float = 25.0
+    min_notional_usdc: float = 10.0  # Minimum trade size
+    prefer_stable: str = "USDC"
     slippage_model: str = "depth_aware"  # Updated to depth-aware
     max_venue_clock_skew_ms: int = 200  # New: max time difference between exchanges
+    # Dynamic trade sizing parameters
+    liquidity_multiplier: float = 1.5  # Require 1.5x target size in liquidity
+    safety_factor: float = 0.8  # Use 80% of available liquidity
+    max_depth_pct: float = 0.20  # Max 0.20% from midprice for aggregation
 
 
 class ExecutionConfig(BaseModel):
@@ -57,9 +63,9 @@ class ExecutionConfig(BaseModel):
 
 class InventoryConfig(BaseModel):
     """Inventory management configuration."""
-    min_free_usdt: float = 200.0
+    min_free_usdc: float = 2.0
     size_pct_of_side_liquidity: float = 0.15  # 15% of available liquidity
-    rebalance_asset: str = "USDT"
+    rebalance_asset: str = "USDC"
     rebalance_threshold_pct: float = 15.0  # Rebalance at 15% deviation
     max_inventory_deviation_pct: float = 10.0  # Max 10% deviation
     target_stable_ratio: float = 0.5  # 50% stablecoin / 50% crypto
@@ -68,6 +74,7 @@ class InventoryConfig(BaseModel):
 class RiskConfig(BaseModel):
     """Risk management configuration."""
     max_daily_notional: float = 1000.0
+    max_notional_usdc: float = 25.0  # Max position size per leg
     max_daily_loss: float = -50.0
     max_consecutive_losses: int = 2
     max_drawdown_pct: float = 5.0
@@ -76,6 +83,17 @@ class RiskConfig(BaseModel):
     max_trades_per_session: int = 5
     max_loss_per_trade_pct: float = 0.3
     max_session_loss_pct: float = 1.0
+    
+    # Aliases for config.yaml compatibility
+    @property
+    def daily_notional_limit(self) -> float:
+        """Alias for max_daily_notional from config.yaml."""
+        return self.max_daily_notional
+    
+    @property
+    def max_daily_loss_pct(self) -> float:
+        """Alias for max_daily_loss_pct from config.yaml."""
+        return abs(self.max_daily_loss) if self.max_daily_loss < 0 else 0.0
 
 
 class DepthModelConfig(BaseModel):
@@ -86,6 +104,10 @@ class DepthModelConfig(BaseModel):
     max_level_age_ms: int = 1000  # Discard stale depth data
     slippage_buffer_bps: float = 3.0  # 3 bps slippage buffer
     min_liquidity_multiplier: float = 3.0  # Require 3x position size in liquidity
+    # Order book aggregation parameters
+    max_depth_pct: float = 0.20  # Max 0.20% from midprice for aggregation
+    vwap_calculation_levels: int = 10  # Use L1-L10 for VWAP calculation
+    per_order_cap_usdc: float = 1000.0  # Split orders larger than $1k
 
 
 class RealisticTradingConfig(BaseModel):
@@ -102,7 +124,19 @@ class SessionConfig(BaseModel):
     duration_hours: int = 3
     auto_stop: bool = True
     export_results: bool = True
-    target_pairs: List[str] = ["SOL/USDT", "ETH/USDT"]
+    # Focused on top 10 most liquid pairs available on both Kraken and Binance
+    target_pairs: List[str] = [
+        "BTC/USDC",    # Bitcoin - highest volume
+        "ETH/USDC",    # Ethereum - highest volume  
+        "XRP/USDC",    # Ripple - high volume
+        "BNB/USDC",    # Binance Coin - high volume
+        "SOL/USDC",    # Solana - high volume
+        "DOGE/USDC",   # Dogecoin - high volume
+        "TRX/USDT",    # Tron - high volume
+        "ADA/USDC",    # Cardano - high volume
+        "LINK/USDC",   # Chainlink - high volume
+        "HYPE/USDC"    # Hype - high volume
+    ]
 
 
 class BacktestConfig(BaseModel):
@@ -119,6 +153,7 @@ class AlertConfig(BaseModel):
     notify_all_trades: bool = True
     notify_risk_events: bool = True
     notify_session_summary: bool = True
+    enable_interactive_bot: bool = False
 
 
 class StorageConfig(BaseModel):

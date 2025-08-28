@@ -9,8 +9,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from loguru import logger
 
-from ..exchanges.base import BaseExchange
-from ..config import Config
+from src.exchanges.base import BaseExchange
+from src.config import Config
 
 
 class TickRecorder:

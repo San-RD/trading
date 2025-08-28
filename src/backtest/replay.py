@@ -4,8 +4,8 @@ import pandas as pd
 from typing import Dict, List, Any, Optional, AsyncGenerator
 from loguru import logger
 
-from ..exchanges.base import Quote
-from ..config import Config
+from src.exchanges.base import Quote
+from src.config import Config
 
 
 class TickReplay:

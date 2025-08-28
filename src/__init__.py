@@ -1,7 +1,7 @@
-"""Triangular Arbitrage Trading Bot
-
-A high-frequency triangular arbitrage trading bot for centralized exchanges.
+#!/usr/bin/env python3
+"""
+Triangular Arbitrage Bot - Core Package
 """
 
-__version__ = "0.1.0"
-__author__ = "TriArb Bot"
+__version__ = "1.0.0"
+__author__ = "Kiril"

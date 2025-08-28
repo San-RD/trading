@@ -5,8 +5,8 @@ import time
 from typing import Dict, List, Optional, Set
 from loguru import logger
 
-from ..exchanges.base import Quote, OrderBook
-from ..exchanges.depth_model import DepthModel
+from exchanges.base import Quote, OrderBook
+from exchanges.depth_model import DepthModel
 from .quotes import QuoteBus
 from .detector import ArbitrageDetector
 from .executor import ArbitrageExecutor
@@ -174,7 +174,7 @@ class MarketMonitor:
                     # Calculate edge
                     try:
                         edge_bps, profit, details = calculate_triangle_edge(
-                            triangle, self.quotes, self.config.risk.max_notional_usdt,
+                            triangle, self.quotes, self.config.risk.max_notional_usdc,
                             self.symbol_rules, self.depth_model
                         )
                         

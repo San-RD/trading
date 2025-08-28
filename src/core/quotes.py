@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from collections import defaultdict
 from loguru import logger
 
-from ..exchanges.base import BaseExchange, Quote
-from ..config import Config
+from src.exchanges.base import BaseExchange, Quote
+from src.config import Config
 
 
 @dataclass

@@ -1,7 +1,5 @@
-"""Alert and notification systems for cross-exchange arbitrage."""
+"""Alert system for the cross-exchange arbitrage bot."""
 
-from .telegram import TelegramNotifier
+from .trading_dashboard import TradingDashboard
 
-__all__ = [
-    'TelegramNotifier'
-]
+__all__ = ["TradingDashboard"]

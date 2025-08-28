@@ -4,8 +4,8 @@ from typing import Dict, Optional
 from decimal import Decimal
 from loguru import logger
 
-from ..exchange.binance import BinanceClient, Balance
-from ..config import get_config
+from exchange.binance import BinanceClient, Balance
+from config import get_config
 
 
 class Portfolio:
@@ -60,11 +60,11 @@ class Portfolio:
         if quote_asset == "USDT":
             # Apply safety margin
             available = free_balance * 0.95
-            return min(available, self.config.risk.max_notional_usdt)
+            return min(available, self.config.risk.max_notional_usdc)
         else:
             # For non-USDT quote assets, convert to USDT equivalent
             # This is simplified - in practice you'd need current market prices
-            return min(free_balance, self.config.risk.max_notional_usdt)
+            return min(free_balance, self.config.risk.max_notional_usdc)
     
     def has_sufficient_balance(self, asset: str, required_amount: float) -> bool:
         """Check if there's sufficient balance for an asset."""
@@ -106,7 +106,7 @@ class Portfolio:
         
         return {
             'above_stop_threshold': usdt_balance >= stop_threshold,
-            'sufficient_for_trading': usdt_balance >= self.config.risk.max_notional_usdt
+            'sufficient_for_trading': usdc_balance >= self.config.risk.max_notional_usdc
         }
     
     def simulate_trade_impact(self, opportunity, notional: float) -> Dict:

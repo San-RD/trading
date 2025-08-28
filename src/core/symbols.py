@@ -4,8 +4,8 @@ from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass
 from loguru import logger
 
-from ..exchanges.base import BaseExchange
-from ..config import Config
+from src.exchanges.base import BaseExchange
+from src.config import Config
 
 
 @dataclass
@@ -59,20 +59,49 @@ class SymbolManager:
                 logger.error(f"Failed to load markets from {exchange_name}: {e}")
                 exchange_symbols[exchange_name] = []
         
-        # Filter symbols based on configuration
-        filtered_symbols = self._filter_symbols(all_symbols)
-        
-        # Find intersection symbols (available on both exchanges)
+        # Find intersection symbols (available on both exchanges) FIRST
         left_exchange = self.config.exchanges.left
         right_exchange = self.config.exchanges.right
         
         left_symbols = set(exchange_symbols.get(left_exchange, []))
         right_symbols = set(exchange_symbols.get(right_exchange, []))
         
-        intersection_symbols = list(left_symbols.intersection(right_symbols))
-        intersection_symbols = [s for s in intersection_symbols if s in filtered_symbols]
+        # Debug: Show what symbols each exchange has
+        logger.info(f"Left exchange ({left_exchange}) symbols: {len(left_symbols)}")
+        logger.info(f"Right exchange ({right_exchange}) symbols: {len(right_symbols)}")
         
-        logger.info(f"Symbol intersection: {len(intersection_symbols)} symbols")
+        # Debug: Show some sample symbols from each exchange
+        left_sample = [s for s in left_symbols if 'ETH' in s][:5]
+        right_sample = [s for s in right_symbols if 'ETH' in s][:5]
+        logger.info(f"Left ETH symbols sample: {left_sample}")
+        logger.info(f"Right ETH symbols sample: {right_sample}")
+        
+        intersection_symbols = list(left_symbols.intersection(right_symbols))
+        logger.info(f"Raw intersection: {len(intersection_symbols)} symbols")
+        
+        # Prioritize target pairs - ensure they're always included
+        target_pairs = getattr(self.config.session, 'target_pairs', [])
+        priority_symbols = []
+        
+        for target in target_pairs:
+            logger.info(f"🔍 Checking target pair: {target}")
+            logger.info(f"  In left symbols: {target in left_symbols}")
+            logger.info(f"  In right symbols: {target in right_symbols}")
+            logger.info(f"  In intersection: {target in intersection_symbols}")
+            
+            if target in intersection_symbols:
+                priority_symbols.append(target)
+                logger.info(f"✅ Target pair {target} found in intersection")
+            else:
+                logger.warning(f"⚠️ Target pair {target} not found in intersection")
+        
+        # Filter remaining symbols based on configuration
+        filtered_symbols = self._filter_symbols(all_symbols)
+        
+        # Combine priority symbols with filtered intersection symbols
+        final_intersection = list(set(priority_symbols + [s for s in intersection_symbols if s in filtered_symbols]))
+        
+        logger.info(f"Symbol intersection: {len(final_intersection)} symbols (including {len(priority_symbols)} priority symbols)")
         
         # Create universe
         self.universe = SymbolUniverse(
@@ -80,7 +109,7 @@ class SymbolManager:
             base_assets=all_base_assets,
             quote_assets=all_quote_assets,
             exchange_symbols=exchange_symbols,
-            intersection_symbols=intersection_symbols
+            intersection_symbols=final_intersection
         )
         
         return self.universe

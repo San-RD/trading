@@ -6,6 +6,7 @@ from typing import Dict, List, Any, Optional
 from pathlib import Path
 from loguru import logger
 import time
+from datetime import datetime, timedelta
 
 from .models import Opportunity, Order, Fill, Trade, BalanceSnapshot
 
@@ -254,3 +255,143 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to get recent opportunities: {e}")
             return []
+
+
+class DatabaseManager:
+    """Simple database manager interface for monitoring bot."""
+    
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            # Try to find the database from config or use default
+            try:
+                from src.config import Config
+                config = Config.load_from_file("config.yaml")
+                db_path = config.storage.db_path
+            except:
+                db_path = "arb.sqlite"  # fallback
+        
+        self.db = Database(db_path)
+        self.logger = logger
+    
+    async def connect(self):
+        """Connect to database."""
+        await self.db.connect()
+    
+    async def disconnect(self):
+        """Disconnect from database."""
+        await self.db.disconnect()
+    
+    async def get_recent_trades(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent trades from database."""
+        try:
+            await self.db.connect()
+            cursor = self.db.connection.cursor()
+            
+            cursor.execute("""
+                SELECT id, symbol, direction, pnl_usdt, edge_bps, 
+                       ts, latency_ms_total, mode, notes
+                FROM trades 
+                ORDER BY ts DESC 
+                LIMIT ?
+            """, (limit,))
+            
+            trades = []
+            for row in cursor.fetchall():
+                # Convert timestamp from milliseconds to datetime
+                timestamp = datetime.fromtimestamp(row[5] / 1000) if row[5] else None
+                
+                trades.append({
+                    'id': row[0],
+                    'symbol': row[1],
+                    'direction': row[2],
+                    'pnl': row[3] or 0.0,
+                    'edge_bps': row[4],
+                    'timestamp': timestamp,
+                    'latency_ms': row[6],
+                    'mode': row[7],
+                    'notes': row[8]
+                })
+            
+            return trades
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get recent trades: {e}")
+            return []
+        finally:
+            await self.db.disconnect()
+    
+    async def get_trades_in_period(self, start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
+        """Get trades in a time period from database."""
+        try:
+            await self.db.connect()
+            cursor = self.db.connection.cursor()
+            
+            # Convert datetime to milliseconds timestamp
+            start_ts = int(start_time.timestamp() * 1000)
+            end_ts = int(end_time.timestamp() * 1000)
+            
+            cursor.execute("""
+                SELECT id, symbol, direction, pnl_usdt, edge_bps, 
+                       ts, latency_ms_total, mode, notes
+                FROM trades 
+                WHERE ts >= ? AND ts <= ?
+                ORDER BY ts DESC
+            """, (start_ts, end_ts))
+            
+            trades = []
+            for row in cursor.fetchall():
+                # Convert timestamp from milliseconds to datetime
+                timestamp = datetime.fromtimestamp(row[5] / 1000) if row[5] else None
+                
+                trades.append({
+                    'id': row[0],
+                    'symbol': row[1],
+                    'direction': row[2],
+                    'pnl': row[3] or 0.0,
+                    'edge_bps': row[4],
+                    'timestamp': timestamp,
+                    'latency_ms': row[6],
+                    'mode': row[7],
+                    'notes': row[8]
+                })
+            
+            return trades
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get trades in period: {e}")
+            return []
+        finally:
+            await self.db.disconnect()
+    
+    async def get_latest_session(self):
+        """Get latest session info from database."""
+        try:
+            await self.db.connect()
+            cursor = self.db.connection.cursor()
+            
+            cursor.execute("""
+                SELECT MIN(ts) as session_start, MAX(ts) as session_end,
+                       COUNT(*) as total_trades, SUM(pnl_usdt) as total_pnl
+                FROM trades
+                WHERE ts >= ? 
+            """, (int((datetime.now() - timedelta(days=1)).timestamp() * 1000),))
+            
+            row = cursor.fetchone()
+            if row and row[0]:
+                session_start = datetime.fromtimestamp(row[0] / 1000)
+                session_end = datetime.fromtimestamp(row[1] / 1000) if row[1] else None
+                
+                return {
+                    'session_start': session_start,
+                    'session_end': session_end,
+                    'total_trades': row[2] or 0,
+                    'total_pnl': row[3] or 0.0
+                }
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get latest session: {e}")
+            return None
+        finally:
+            await self.db.disconnect()

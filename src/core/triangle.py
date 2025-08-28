@@ -5,8 +5,8 @@ from decimal import Decimal
 import asyncio
 from loguru import logger
 
-from ..exchanges.depth_model import DepthModel
-from ..exchanges.base import Quote, OrderBook
+from exchanges.depth_model import DepthModel
+from exchanges.base import Quote, OrderBook
 from .utils import calculate_spread_bps, calculate_edge_bps
 
 

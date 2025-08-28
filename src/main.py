@@ -10,6 +10,7 @@ from loguru import logger
 
 # uvloop is not available on Windows
 UVLOOP_AVAILABLE = False
+uvloop = None
 if sys.platform != "win32":
     try:
         import uvloop
@@ -17,22 +18,22 @@ if sys.platform != "win32":
     except ImportError:
         UVLOOP_AVAILABLE = False
 
-from .config import get_config
-from .exchanges.binance import BinanceExchange
-from .exchanges.okx import OKXExchange
-from .core.symbols import SymbolManager
-from .core.quotes import QuoteBus
-from .core.detector import ArbitrageDetector
-from .core.executor import ArbitrageExecutor
-from .core.inventory import InventoryManager
-from .core.risk import RiskManager
-from .storage.db import Database
-from .storage.journal import TradeJournal
-from .alerts.telegram import TelegramNotifier
-from .backtest.recorder import TickRecorder
-from .backtest.replay import TickReplay
-from .backtest.sim import BacktestSimulator
-from .core.session import SessionManager
+from src.config import get_config
+from src.exchanges.binance import BinanceExchange
+from src.exchanges.kraken import KrakenExchange
+from src.core.symbols import SymbolManager
+from src.core.quotes import QuoteBus
+from src.core.detector import ArbitrageDetector
+from src.core.executor import ArbitrageExecutor
+from src.core.inventory import InventoryManager
+from src.core.risk import RiskManager
+from src.storage.db import Database
+from src.storage.journal import TradeJournal
+from src.alerts.telegram import TelegramNotifier
+from src.backtest.recorder import TickRecorder
+from src.backtest.replay import TickReplay
+from src.backtest.sim import BacktestSimulator
+from src.core.session import SessionManager
 
 
 class CrossExchangeArbBot:
@@ -44,26 +45,33 @@ class CrossExchangeArbBot:
         self.symbol_manager = SymbolManager(self.config)
         self.quote_bus = QuoteBus(self.config)
         self.detector = ArbitrageDetector(self.config)
+        # Initialize missing attributes
+        self.running = False
+        self.mode = "live"  # Default to live trading
+        
+        # Initialize exchanges
+        self.exchanges = self._init_exchanges()
+        
+        # Set exchange instances in detector for balance fetching and depth analysis
+        self.detector.set_exchanges(self.exchanges)
+        
+        # Initialize executor AFTER exchanges
         self.executor = ArbitrageExecutor(self.config, self.exchanges, "live")  # Live trading mode
         self.risk_manager = RiskManager(self.config)
         self.session_manager = SessionManager(self.config)  # New session manager
         self.storage = Database(self.config.storage.db_path)
         self.alerts = TelegramNotifier(self.config.alerts) if self.config.alerts else None
         
-        # Initialize missing attributes
-        self.running = False
-        self.mode = "live"  # Default to live trading
+        # Set notifier AFTER alerts is initialized
         self.notifier = self.alerts  # Use alerts as notifier
-        
-        # Initialize exchanges
-        self.exchanges = self._init_exchanges()
         
         logger.info("Cross-Exchange Arbitrage Bot initialized")
         logger.info(f"Mode: {self.mode.upper()} CEX ARBITRAGE")
-        logger.info(f"Capital: $100 total ($25 per exchange, $25 per leg)")
+        logger.info(f"Capital: $100 total ($50 per exchange, $50 per leg)")
         logger.info(f"Session duration: {self.config.session.duration_hours}h")
         logger.info(f"Max trades per session: {self.config.risk.max_trades_per_session}")
-        logger.info(f"Position size limit: ${self.config.detector.max_notional_usdt}")
+        logger.info(f"Position size limit: ${self.config.detector.max_notional_usdc}")
+        logger.info(f"Min trade size: ${getattr(self.config.detector, 'min_notional_usdc', 10.0)}")
         logger.info(f"Target pairs: {self.config.session.target_pairs}")
         logger.info(f"Risk profile: {self.config.risk.max_daily_loss}% max daily loss")
 
@@ -79,16 +87,16 @@ class CrossExchangeArbBot:
             logger.error(f"Failed to initialize Binance: {e}")
             raise RuntimeError(f"Cannot start bot without Binance exchange: {e}")
         
-        # Initialize OKX
+        # Initialize Kraken
         try:
-            exchanges['okx'] = OKXExchange("okx", self.config.model_dump())
-            logger.info("OKX exchange initialized")
+            exchanges['kraken'] = KrakenExchange("kraken", self.config.model_dump())
+            logger.info("Kraken exchange initialized")
         except Exception as e:
-            logger.error(f"Failed to initialize OKX: {e}")
-            raise RuntimeError(f"Cannot start bot without OKX exchange: {e}")
+            logger.error(f"Failed to initialize Kraken: {e}")
+            raise RuntimeError(f"Cannot start bot without Kraken exchange: {e}")
         
         # Verify both exchanges are available
-        if 'binance' not in exchanges or 'okx' not in exchanges:
+        if 'binance' not in exchanges or 'kraken' not in exchanges:
             raise RuntimeError("Both exchanges must be initialized to start the bot")
         
         logger.info(f"Successfully initialized exchanges: {list(exchanges.keys())}")
@@ -124,7 +132,8 @@ class CrossExchangeArbBot:
         logger.info(f"Left exchange: {self.config.exchanges.left}")
         logger.info(f"Right exchange: {self.config.exchanges.right}")
         logger.info(f"Min edge: {self.config.detector.min_edge_bps} bps")
-        logger.info(f"Max notional: ${self.config.detector.max_notional_usdt:,.2f}")
+        logger.info(f"Max notional: ${self.config.detector.max_notional_usdc:,.2f}")
+        logger.info(f"Min notional: ${getattr(self.config.detector, 'min_notional_usdc', 10.0):,.2f}")
         
         try:
             # Determine target symbols from config for initial connection
@@ -227,11 +236,22 @@ class CrossExchangeArbBot:
                 # Get latest quotes
                 quotes = self.quote_bus.get_fresh_quotes()
                 
+                if quotes:
+                    logger.debug(f"Received {len(quotes)} quotes")
+                    for quote in quotes:
+                        if hasattr(quote, 'left_quote') and hasattr(quote, 'right_quote'):
+                            if quote.left_quote and quote.right_quote:
+                                left_price = (quote.left_quote.bid + quote.left_quote.ask) / 2
+                                right_price = (quote.right_quote.bid + quote.right_quote.ask) / 2
+                                price_diff = abs(left_price - right_price)
+                                price_diff_bps = (price_diff / min(left_price, right_price)) * 10000
+                                logger.info(f"📊 Quote: {quote.symbol} - Left: ${left_price:.2f}, Right: ${right_price:.2f}, Diff: ${price_diff:.2f} ({price_diff_bps:.1f} bps)")
+                
                 # Detect opportunities
                 opportunities = self.detector.detect_opportunities(quotes)
                 
                 if opportunities:
-                    logger.info(f"Detected {len(opportunities)} arbitrage opportunities")
+                    logger.info(f"🎯 Detected {len(opportunities)} arbitrage opportunities")
                     
                     # Process each opportunity
                     for opportunity in opportunities:
@@ -240,13 +260,15 @@ class CrossExchangeArbBot:
                         # Check if we should stop after this trade
                         if not self.session_manager.should_continue_session():
                             break
+                else:
+                    logger.debug("No opportunities detected in this cycle")
                 
                 # Log session status every 5 minutes
                 # if int(time.time()) % 300 == 0: # This line was removed as per new_code
                 #     self.session_manager.log_session_status() # This line was removed as per new_code
                 
                 # Wait before next iteration
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
                 
             except Exception as e:
                 logger.error(f"Error in trading loop: {e}")
@@ -361,12 +383,14 @@ def run(mode, config, symbols, outfile, parquet_file):
                format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}")
     
     # Use uvloop on Linux for better performance
-    if UVLOOP_AVAILABLE:
+    if UVLOOP_AVAILABLE and uvloop is not None:
         try:
             uvloop.install()
             logger.info("Using uvloop for enhanced performance")
         except Exception as e:
             logger.warning(f"Failed to install uvloop: {e}")
+    else:
+        logger.info("uvloop not available on this platform, using standard asyncio")
     
     # Create and run bot
     bot = CrossExchangeArbBot(config_path=config)

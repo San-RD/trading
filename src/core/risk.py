@@ -5,9 +5,8 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from loguru import logger
 
-from .detector import ArbitrageOpportunity
-from .executor import ExecutionResult
-from ..config import Config
+from .types import ArbitrageOpportunity, ExecutionResult
+from src.config import Config
 
 
 class RiskLimitExceeded(Exception):
@@ -71,8 +70,8 @@ class RiskManager:
             return False, "Quotes too old"
         
         # Check notional limits
-        if opportunity.notional_value > self.config.detector.max_notional_usdt:
-            return False, f"Notional value {opportunity.notional_value} exceeds limit {self.config.detector.max_notional_usdt}"
+        if opportunity.notional_value > self.config.detector.max_notional_usdc:
+            return False, f"Notional value {opportunity.notional_value} exceeds limit {self.config.detector.max_notional_usdc}"
         
         # Check daily notional limit
         if self.metrics.daily_notional + opportunity.notional_value > self.max_daily_notional:

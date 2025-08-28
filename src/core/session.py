@@ -8,9 +8,9 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 from loguru import logger
 
-from ..config import Config
-from ..core.executor import ExecutionResult
-from ..core.detector import ArbitrageOpportunity
+from src.config import Config
+from src.core.executor import ExecutionResult
+from src.core.detector import ArbitrageOpportunity
 
 
 class SessionManager:

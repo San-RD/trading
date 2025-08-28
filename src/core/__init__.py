@@ -2,7 +2,8 @@
 
 from .symbols import SymbolManager, SymbolUniverse
 from .quotes import QuoteBus, QuoteManager, WebSocketManager, ConsolidatedQuote
-from .detector import ArbitrageDetector, ArbitrageOpportunity, ArbitrageDirection
+from .types import ArbitrageOpportunity, ArbitrageDirection
+from .detector import ArbitrageDetector
 from .executor import ArbitrageExecutor, ExecutionResult, ExecutionStatus
 from .inventory import InventoryManager, RebalancePlan
 from .risk import RiskManager, RiskMetrics

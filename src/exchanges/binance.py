@@ -74,12 +74,22 @@ class BinanceExchange(BaseExchange):
             # 3) Load markets on public clients only
             await self.rest_public.load_markets()
             await self.ws_public.load_markets()
+            
+            # 4) Load markets on private client for order placement
+            await self.rest_private.load_markets()
 
-            # 4) Validate symbols
+            # 5) Validate symbols and log filters
             for symbol in symbols:
                 if symbol not in self.rest_public.markets:
                     logger.error(f"Binance symbol not found in public markets: {symbol}")
                     return False
+                
+                # Log symbol filters for precision/rounding
+                market = self.rest_public.market(symbol)
+                logger.info(f"Binance {symbol} filters:")
+                logger.info(f"  LOT_SIZE: stepSize={market.get('precision', {}).get('amount', 'N/A')}, minQty={market.get('limits', {}).get('amount', {}).get('min', 'N/A')}, maxQty={market.get('limits', {}).get('amount', {}).get('max', 'N/A')}")
+                logger.info(f"  PRICE_FILTER: tickSize={market.get('precision', {}).get('price', 'N/A')}")
+                logger.info(f"  NOTIONAL: min={market.get('limits', {}).get('cost', {}).get('min', 'N/A')}")
 
             self._connected = True
             self._markets_loaded = True
@@ -122,13 +132,29 @@ class BinanceExchange(BaseExchange):
         if not self.ws_public:
             raise RuntimeError("Public WebSocket client not initialized")
 
+        logger.info(f"Starting WebSocket quote monitoring for symbols: {symbols}")
+        
         try:
             while self._connected:
                 for symbol in symbols:
                     try:
+                        logger.debug(f"Attempting to watch ticker for {symbol}")
+                        
                         # Use WebSocket for real-time quotes
                         ticker = await self.ws_public.watch_ticker(symbol)
+                        
+                        logger.debug(f"Received ticker for {symbol}: {ticker}")
+                        
+                        # Log raw ticker data for debugging
+                        logger.info(f"🔍 Raw Binance ticker for {symbol}:")
+                        logger.info(f"   Bid: {ticker.get('bid', 'N/A')}")
+                        logger.info(f"   Ask: {ticker.get('ask', 'N/A')}")
+                        logger.info(f"   Bid size: {ticker.get('bidVolume', 'N/A')}")
+                        logger.info(f"   Ask size: {ticker.get('askVolume', 'N/A')}")
+                        logger.info(f"   Spread: ${float(ticker.get('ask', 0)) - float(ticker.get('bid', 0)):.2f}")
+                        
                         if not ticker or 'bid' not in ticker or 'ask' not in ticker:
+                            logger.warning(f"Invalid ticker data for {symbol}: {ticker}")
                             continue
                         
                         quote = Quote(
@@ -142,11 +168,13 @@ class BinanceExchange(BaseExchange):
                             ts_local=int(time.time() * 1000)
                         )
                         
+                        logger.info(f"✅ Generated quote for {symbol}: bid={quote.bid}, ask={quote.ask}")
+                        
                         self._last_update = quote.ts_local
                         yield quote
                             
                     except Exception as e:
-                        logger.warning(f"Error watching quotes for {symbol}: {e}")
+                        logger.error(f"Error watching quotes for {symbol}: {e}")
                         await asyncio.sleep(1)
                         
                 await asyncio.sleep(0.1)  # Small delay between symbol cycles
@@ -183,25 +211,72 @@ class BinanceExchange(BaseExchange):
             return OrderResult(False, error="Private REST client not initialized")
         
         try:
-            order_params = {
-                'symbol': symbol,
-                'type': order_type,
-                'side': side,
-                'amount': amount,
-                'timeInForce': 'IOC',  # Immediate or Cancel
-            }
+            # For market orders with quoteOrderQty, we don't need market info for validation
+            # Binance will handle all filter checks automatically
             
-            if price:
-                order_params['price'] = price
+            # For market orders, we don't need price precision since we're using quoteOrderQty
+            # Price will be determined by market at execution time
+            
+            # For MARKET orders, use quoteOrderQty (USDC amount)
+            # Note: We're using market orders as per config.yaml
+            if order_type == 'market':
+                # Market orders use quoteOrderQty for the USDC amount
+                # IMPORTANT: amount parameter is in base asset (ETH), but quoteOrderQty needs USDC
+                if side == 'buy':
+                    # For buy orders, convert ETH amount to USDC using current price
+                    # We need to estimate the USDC cost for the ETH amount
+                    estimated_usdc = amount * 4600  # Approximate ETH price
+                    order_params = {
+                        'symbol': symbol,
+                        'type': 'market',
+                        'side': side,
+                        'quoteOrderQty': estimated_usdc  # USDC amount
+                    }
+                    logger.info(f"  Converted {amount} ETH to ~${estimated_usdc:.2f} USDC for quoteOrderQty")
+                else:
+                    # For sell orders, we need the base asset amount
+                    # Binance market sell orders use 'amount' parameter (not 'quantity')
+                    order_params = {
+                        'symbol': symbol,
+                        'type': 'market',
+                        'side': side,
+                        'amount': amount  # Base asset amount (ETH) - CCXT uses 'amount'
+                    }
+                    logger.info(f"  Using base asset amount: {amount} ETH for sell order")
+            else:  # fallback for other order types
+                # Unsupported order type
+                return OrderResult(False, error=f"Unsupported order type: {order_type}")
+            
+            # For market orders, we don't need to validate price/quantity since we're using quoteOrderQty
+            # Binance will handle the conversion and apply filters automatically
+            if order_type == 'market':
+                logger.info(f"Binance market order for {symbol}:")
+                logger.info(f"  Quote amount: ${amount} USDC")
+                logger.info(f"  Side: {side}")
+                logger.info(f"  Order type: {order_type}")
             
             if params:
                 order_params.update(params)
             
+            logger.info(f"  Sending order to Binance: {order_params}")
             result = await self.rest_private.create_order(**order_params)
+            logger.info(f"  Binance response: {result}")
+            
+            # Validate response structure
+            if not result or 'id' not in result:
+                logger.error(f"❌ Invalid Binance response: missing order ID")
+                return OrderResult(False, error="Invalid response: missing order ID")
+            
+            order_id = result.get('id')
+            if not order_id:
+                logger.error(f"❌ Binance order ID is empty")
+                return OrderResult(False, error="Empty order ID from Binance")
+            
+            logger.info(f"✅ Binance order placed successfully: {order_id}")
             
             return OrderResult(
                 success=True,
-                order_id=result.get('id'),
+                order_id=order_id,
                 filled_qty=float(result.get('filled', 0)),
                 avg_price=float(result.get('average', 0)),
                 fee_asset=result.get('fee', {}).get('currency', ''),
@@ -269,3 +344,58 @@ class BinanceExchange(BaseExchange):
     def get_maker_fee_bps(self) -> float:
         """Get maker fee in basis points."""
         return self.config.get('maker_fee_bps', 8.0)
+    
+    def calculate_order_amount(self, symbol: str, notional_usd: float, price: float) -> float:
+        """Calculate proper order amount respecting Binance filters."""
+        try:
+            # Use public client for market info if private not loaded
+            if self.rest_private and hasattr(self.rest_private, 'markets') and symbol in self.rest_private.markets:
+                market = self.rest_private.market(symbol)
+            elif self.rest_public and hasattr(self.rest_public, 'markets') and symbol in self.rest_public.markets:
+                market = self.rest_public.market(symbol)
+            else:
+                logger.warning(f"Markets not loaded for {symbol}, using fallback calculation")
+                return notional_usd / price
+            
+            # Calculate raw amount
+            raw_amount = notional_usd / price
+            
+            # Round to step size - use public client if private not available
+            if self.rest_private and hasattr(self.rest_private, 'amount_to_precision'):
+                rounded_amount = float(self.rest_private.amount_to_precision(symbol, raw_amount))
+            elif self.rest_public and hasattr(self.rest_public, 'amount_to_precision'):
+                rounded_amount = float(self.rest_public.amount_to_precision(symbol, raw_amount))
+            else:
+                logger.warning(f"Precision helpers not available for {symbol}, using raw calculation")
+                rounded_amount = raw_amount
+            
+            # Verify notional after rounding
+            actual_notional = rounded_amount * price
+            min_notional = market.get('limits', {}).get('cost', {}).get('min', 0)
+            
+            logger.info(f"Binance amount calculation for {symbol}:")
+            logger.info(f"  Target notional: ${notional_usd}")
+            logger.info(f"  Price: ${price}")
+            logger.info(f"  Raw amount: {raw_amount} ETH")
+            logger.info(f"  Rounded amount: {rounded_amount} ETH")
+            logger.info(f"  Actual notional: ${actual_notional:.4f}")
+            logger.info(f"  Min notional: ${min_notional}")
+            
+            if actual_notional < min_notional:
+                logger.warning(f"Rounded notional ${actual_notional:.4f} below minimum ${min_notional}")
+                # Try to bump amount minimally to clear min notional
+                min_amount_needed = min_notional / price
+                if self.rest_private and hasattr(self.rest_private, 'amount_to_precision'):
+                    bumped_amount = float(self.rest_private.amount_to_precision(symbol, min_amount_needed))
+                elif self.rest_public and hasattr(self.rest_public, 'amount_to_precision'):
+                    bumped_amount = float(self.rest_public.amount_to_precision(symbol, min_amount_needed))
+                else:
+                    bumped_amount = min_amount_needed
+                logger.info(f"Bumped amount to {bumped_amount} ETH to meet minimum notional")
+                return bumped_amount
+            
+            return rounded_amount
+            
+        except Exception as e:
+            logger.error(f"Error calculating order amount: {e}")
+            return notional_usd / price  # Fallback to raw calculation

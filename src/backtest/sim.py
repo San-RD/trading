@@ -4,10 +4,10 @@ import time
 from typing import Dict, List, Any, Optional
 from loguru import logger
 
-from ..core.detector import ArbitrageDetector
-from ..core.executor import ArbitrageExecutor
-from ..core.quotes import ConsolidatedQuote
-from ..config import Config
+from src.core.detector import ArbitrageDetector
+from src.core.executor import ArbitrageExecutor
+from src.core.quotes import ConsolidatedQuote
+from src.config import Config
 
 
 class BacktestSimulator:
@@ -134,7 +134,7 @@ class BacktestSimulator:
             'current_quotes': len(self.current_quotes),
             'config': {
                 'min_edge_bps': self.config.detector.min_edge_bps,
-                'max_notional': self.config.detector.max_notional_usdt,
+                'max_notional': self.config.detector.max_notional_usdc,
                 'slippage_model': self.config.detector.slippage_model
             }
         }
