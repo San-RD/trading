@@ -162,6 +162,8 @@ class SpotPerpDetector:
                         direction: SpotPerpDirection) -> Optional[SpotPerpOpportunity]:
         """Check if there's an arbitrage opportunity in the given direction."""
         try:
+            logger.debug(f"🔍 Checking direction {direction.value} for {symbol}")
+            
             if direction == SpotPerpDirection.SPOT_BUY_PERP_SELL:
                 # Buy spot (ask), sell perp (bid)
                 spot_price = spot_quote.ask
@@ -176,11 +178,16 @@ class SpotPerpDetector:
                 spot_vwap = self._calculate_vwap(spot_quote, "bid", direction)
                 perp_vwap = self._calculate_vwap(perp_quote, "ask", direction)
             
+            logger.debug(f"📊 Prices - Spot: {spot_price:.4f}, Perp: {perp_price:.4f}")
+            logger.debug(f"📊 VWAPs - Spot: {spot_vwap:.4f}, Perp: {perp_vwap:.4f}")
+            
             # Calculate gross edge
             if direction == SpotPerpDirection.SPOT_BUY_PERP_SELL:
                 gross_edge_bps = ((perp_vwap - spot_vwap) / spot_vwap) * 10000
             else:
                 gross_edge_bps = ((spot_vwap - perp_vwap) / perp_vwap) * 10000
+            
+            logger.debug(f"💰 Gross edge: {gross_edge_bps:.2f} bps")
             
             # Check minimum gross edge
             if gross_edge_bps < self.min_edge_bps:
@@ -199,6 +206,8 @@ class SpotPerpDetector:
             
             # Calculate net edge
             net_edge_bps = gross_edge_bps - total_fees_bps - self.slippage_buffer_bps - funding_cost_bps
+            
+            logger.debug(f"💰 Net edge calculation: {gross_edge_bps:.2f} - {total_fees_bps:.2f} - {self.slippage_buffer_bps:.2f} - {funding_cost_bps:.2f} = {net_edge_bps:.2f} bps")
             
             # Check minimum net edge
             if net_edge_bps < self.min_net_edge:
