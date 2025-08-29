@@ -225,23 +225,19 @@ class KrakenExchange(BaseExchange):
                                 # Extract bid/ask from documented format
                                 bid = float(ticker.get('bid', 0))
                                 ask = float(ticker.get('ask', 0))
-                                bid_size = float(ticker.get('bid_qty', 0))
-                                ask_size = float(ticker.get('ask_qty', 0))
+
                                 symbol = ticker.get('symbol', '')
                                 
                                 if bid > 0 and ask > 0 and symbol:
                                     quote = Quote(
-                                        venue=self.name,
                                         symbol=symbol,
                                         bid=bid,
                                         ask=ask,
-                                        bid_size=bid_size,
-                                        ask_size=ask_size,
-                                        ts_exchange=int(time.time() * 1000),
-                                        ts_local=int(time.time() * 1000)
+                                        last=ask,
+                                        ts_exchange=int(time.time() * 1000)
                                     )
                                     
-                                    self._last_update = quote.ts_local
+                                    self._last_update = quote.ts_exchange
                                     yield quote
                         
                         elif 'method' in data and data['method'] == 'pong':
@@ -298,22 +294,18 @@ class KrakenExchange(BaseExchange):
                             # Extract bid/ask from Kraken ticker format
                             bid = float(ticker_data.get('b', [0])[0])
                             ask = float(ticker_data.get('a', [0])[0])
-                            bid_size = float(ticker_data.get('b', [0, 0])[1])
-                            ask_size = float(ticker_data.get('a', [0, 0])[1])
+
                             
                             if bid > 0 and ask > 0:
                                 quote = Quote(
-                                    venue=self.name,
                                     symbol=symbol,
                                     bid=bid,
                                     ask=ask,
-                                    bid_size=bid_size,
-                                    ask_size=ask_size,
-                                    ts_exchange=int(time.time() * 1000),
-                                    ts_local=int(time.time() * 1000)
+                                    last=ask,
+                                    ts_exchange=int(time.time() * 1000)
                                 )
                                 
-                                self._last_update = quote.ts_local
+                                self._last_update = quote.ts_exchange
                                 yield quote
                             
                     except Exception as e:
@@ -347,19 +339,17 @@ class KrakenExchange(BaseExchange):
                 
                 for bid in order_book_data.get('bids', [])[:limit]:
                     if len(bid) >= 2:
-                        bids.append((float(bid[0]), float(bid[1])))
+                        bids.append([float(bid[0]), float(bid[1])])
                 
                 for ask in order_book_data.get('asks', [])[:limit]:
                     if len(ask) >= 2:
-                        asks.append((float(ask[0]), float(ask[1])))
+                        asks.append([float(ask[0]), float(ask[1])])
                 
                 return OrderBook(
-                    venue=self.name,
                     symbol=symbol,
                     bids=bids,
                     asks=asks,
-                    ts_exchange=int(time.time() * 1000),
-                    ts_local=int(time.time() * 1000)
+                    ts_exchange=int(time.time() * 1000)
                 )
             else:
                 logger.error(f"Failed to fetch order book for {symbol}: {order_book_result['error']}")

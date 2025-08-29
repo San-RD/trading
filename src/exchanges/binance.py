@@ -158,19 +158,16 @@ class BinanceExchange(BaseExchange):
                             continue
                         
                         quote = Quote(
-                            venue=self.name,
                             symbol=symbol,
                             bid=float(ticker['bid']),
                             ask=float(ticker['ask']),
-                            bid_size=float(ticker.get('bidVolume', 0) or 0),
-                            ask_size=float(ticker.get('askVolume', 0) or 0),
-                            ts_exchange=ticker.get('timestamp', int(time.time() * 1000)),
-                            ts_local=int(time.time() * 1000)
+                            last=float(ticker.get('last', ticker['ask'])),
+                            ts_exchange=ticker.get('timestamp', int(time.time() * 1000))
                         )
                         
                         logger.info(f"✅ Generated quote for {symbol}: bid={quote.bid}, ask={quote.ask}")
                         
-                        self._last_update = quote.ts_local
+                        self._last_update = quote.ts_exchange
                         yield quote
                             
                     except Exception as e:
@@ -192,12 +189,10 @@ class BinanceExchange(BaseExchange):
             order_book = await self.rest_public.fetch_order_book(symbol, limit)
             
             return OrderBook(
-                venue=self.name,
                 symbol=symbol,
                 bids=order_book['bids'][:limit],
                 asks=order_book['asks'][:limit],
-                ts_exchange=order_book['timestamp'],
-                ts_local=int(time.time() * 1000)
+                ts_exchange=order_book['timestamp']
             )
         except Exception as e:
             logger.error(f"Failed to fetch order book for {symbol}: {e}")

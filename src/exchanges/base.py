@@ -4,19 +4,31 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, AsyncGenerator
 from decimal import Decimal
 from dataclasses import dataclass
+from enum import Enum
+
+
+class OrderType(Enum):
+    """Order types."""
+    MARKET = "market"
+    LIMIT = "limit"
+    IOC = "ioc"  # Immediate or Cancel
+    FOK = "fok"  # Fill or Kill
+
+
+class OrderSide(Enum):
+    """Order sides."""
+    BUY = "buy"
+    SELL = "sell"
 
 
 @dataclass
 class Quote:
     """Market quote data."""
-    venue: str
     symbol: str
     bid: float
     ask: float
-    bid_size: float
-    ask_size: float
+    last: float
     ts_exchange: int
-    ts_local: int
 
     @property
     def spread_bps(self) -> float:
@@ -34,12 +46,10 @@ class Quote:
 @dataclass
 class OrderBook:
     """Order book data."""
-    venue: str
     symbol: str
-    bids: List[tuple[float, float]]  # (price, size)
-    asks: List[tuple[float, float]]  # (price, size)
+    bids: List[List[float]]  # [price, size]
+    asks: List[List[float]]  # [price, size]
     ts_exchange: int
-    ts_local: int
 
 
 @dataclass

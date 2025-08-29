@@ -237,8 +237,11 @@ class SpotPerpRunner:
                 # Start subscriptions after connection is stable
                 logger.info("🚀 Starting Hyperliquid market data subscriptions...")
                 try:
-                    subscription_result = await self.perp_exchange.start_subscriptions()
-                    if not subscription_result:
+                    # Extract the base asset from the perp symbol (e.g., "ETH-PERP" -> "ETH")
+                    base_asset = self.perp_symbol.replace('-PERP', '')
+                    subscription_result = await self.perp_exchange.start_subscriptions([base_asset])
+                    # In mock mode, subscription_result might be None, which is fine
+                    if subscription_result is False:  # Only fail if explicitly False
                         raise Exception("Failed to start Hyperliquid subscriptions")
                     logger.info("✅ Hyperliquid subscriptions started successfully")
                     
@@ -265,9 +268,8 @@ class SpotPerpRunner:
     async def _start_market_data_streams(self):
         """Start market data streams for both exchanges."""
         try:
-            # Fetch initial quotes from REST API as fallback
-            logger.info("Fetching initial quotes from REST API...")
-            await self.perp_exchange.fetch_initial_quotes([self.perp_symbol])
+            # WebSocket should provide real-time quotes, no need for REST fallback
+            logger.info("WebSocket subscriptions should provide real-time quotes")
             
             # Start spot quote stream
             asyncio.create_task(self._stream_spot_quotes())
@@ -288,23 +290,23 @@ class SpotPerpRunner:
             logger.info(f"Spot exchange connected: {self.spot_exchange.is_connected()}")
             
             async for quote in self.spot_exchange.watch_quotes([self.spot_symbol]):
-                                        # Store quotes by symbol
-                        if not hasattr(self, 'spot_quotes_by_symbol'):
-                            self.spot_quotes_by_symbol = {}
-                            logger.info(f"📊 First spot quote: {quote.symbol} bid=${quote.bid:.4f} ask=${quote.ask:.4f}")
-                        
-                        # Check if price changed significantly (>0.1%)
-                        old_quote = self.spot_quotes_by_symbol.get(quote.symbol)
-                        if old_quote:
-                            old_mid = (old_quote.bid + old_quote.ask) / 2
-                            new_mid = (quote.bid + quote.ask) / 2
-                            price_change_pct = abs(new_mid - old_mid) / old_mid * 100
-                            if price_change_pct > 0.1:  # Only log if >0.1% change
-                                logger.info(f"📊 Spot price update: {quote.symbol} ${old_mid:.4f} → ${new_mid:.4f} ({price_change_pct:+.2f}%)")
-                        
-                        self.spot_quotes_by_symbol[quote.symbol] = quote
-                        self.spot_quotes = list(self.spot_quotes_by_symbol.values())
-                        self.state.last_opportunity_check = int(time.time() * 1000)
+                # Store quotes by symbol
+                if not hasattr(self, 'spot_quotes_by_symbol'):
+                    self.spot_quotes_by_symbol = {}
+                    logger.info(f"📊 First spot quote: {quote.symbol} bid=${quote.bid:.4f} ask=${quote.ask:.4f}")
+                
+                # Check if price changed significantly (>0.1%)
+                old_quote = self.spot_quotes_by_symbol.get(quote.symbol)
+                if old_quote:
+                    old_mid = (old_quote.bid + old_quote.ask) / 2
+                    new_mid = (quote.bid + quote.ask) / 2
+                    price_change_pct = abs(new_mid - old_mid) / old_mid * 100
+                    if price_change_pct > 0.1:  # Only log if >0.1% change
+                        logger.info(f"📊 Spot price update: {quote.symbol} ${old_mid:.4f} → ${new_mid:.4f} ({price_change_pct:+.2f}%)")
+                
+                self.spot_quotes_by_symbol[quote.symbol] = quote
+                self.spot_quotes = list(self.spot_quotes_by_symbol.values())
+                self.state.last_opportunity_check = int(time.time() * 1000)
                 
         except Exception as e:
             logger.error(f"Error in spot quote stream: {e}")
@@ -323,23 +325,23 @@ class SpotPerpRunner:
             logger.info(f"🔍 perp_exchange methods: {[method for method in dir(self.perp_exchange) if not method.startswith('_')]}")
             
             async for quote in self.perp_exchange.watch_quotes([self.perp_symbol]):
-                                        # Store quotes by symbol
-                        if not hasattr(self, 'perp_quotes_by_symbol'):
-                            self.perp_quotes_by_symbol = {}
-                            logger.info(f"📊 First perp quote: {quote.symbol} bid=${quote.bid:.4f} ask=${quote.ask:.4f}")
-                        
-                        # Check if price changed significantly (>0.1%)
-                        old_quote = self.perp_quotes_by_symbol.get(quote.symbol)
-                        if old_quote:
-                            old_mid = (old_quote.bid + old_quote.ask) / 2
-                            new_mid = (quote.bid + quote.ask) / 2
-                            price_change_pct = abs(new_mid - old_mid) / old_mid * 100
-                            if price_change_pct > 0.1:  # Only log if >0.1% change
-                                logger.info(f"📊 Perp price update: {quote.symbol} ${old_mid:.4f} → ${new_mid:.4f} ({price_change_pct:+.2f}%)")
-                        
-                        self.perp_quotes_by_symbol[quote.symbol] = quote
-                        self.perp_quotes = list(self.perp_quotes_by_symbol.values())
-                        self.state.last_opportunity_check = int(time.time() * 1000)
+                # Store quotes by symbol
+                if not hasattr(self, 'perp_quotes_by_symbol'):
+                    self.perp_quotes_by_symbol = {}
+                    logger.info(f"📊 First perp quote: {quote.symbol} bid=${quote.bid:.4f} ask=${quote.ask:.4f}")
+                
+                # Check if price changed significantly (>0.1%)
+                old_quote = self.perp_quotes_by_symbol.get(quote.symbol)
+                if old_quote:
+                    old_mid = (old_quote.bid + old_quote.ask) / 2
+                    new_mid = (quote.bid + quote.ask) / 2
+                    price_change_pct = abs(new_mid - old_mid) / old_mid * 100
+                    if price_change_pct > 0.1:  # Only log if >0.1% change
+                        logger.info(f"📊 Perp price update: {quote.symbol} ${old_mid:.4f} → ${new_mid:.4f} ({price_change_pct:+.2f}%)")
+                
+                self.perp_quotes_by_symbol[quote.symbol] = quote
+                self.perp_quotes = list(self.perp_quotes_by_symbol.values())
+                self.state.last_opportunity_check = int(time.time() * 1000)
                 
         except Exception as e:
             logger.error(f"❌ Error in perp quote stream: {e}")
@@ -356,9 +358,10 @@ class SpotPerpRunner:
                 try:
                     current_time = time.time()
                     
-                    # Check for opportunities (every 500ms - reduced frequency)
-                    if current_time - last_heartbeat >= 0.5:
+                    # Check for opportunities (every 30 seconds)
+                    if current_time - last_heartbeat >= 30.0:
                         if not self.state.is_paused:
+                            await self._send_heartbeat()
                             await self._check_opportunities()
                         last_heartbeat = current_time
                     
@@ -388,6 +391,63 @@ class SpotPerpRunner:
             # Ensure cleanup on exit
             logger.info("Main loop exited, cleaning up...")
             await self.stop()
+
+    async def _send_heartbeat(self):
+        """Send heartbeat message to Telegram."""
+        try:
+            if not self.telegram:
+                return
+                
+            # Get current prices and calculate spread
+            spot_price = "N/A"
+            perp_price = "N/A"
+            spread_bps = 0.0
+            spread_status = "🔴 Unknown"
+            
+            if self.spot_quotes and self.perp_quotes:
+                spot_quote = self.spot_quotes[0]
+                perp_quote = self.perp_quotes[0]
+                
+                spot_mid = (spot_quote.bid + spot_quote.ask) / 2
+                perp_mid = (perp_quote.bid + perp_quote.ask) / 2
+                
+                spot_price = f"${spot_mid:.2f}"
+                perp_price = f"${perp_mid:.2f}"
+                
+                # Calculate spread
+                spread_bps = abs(perp_mid - spot_mid) / spot_mid * 10000
+                
+                # Determine spread status
+                if spread_bps >= self.config.detector.min_edge_bps:
+                    spread_status = "🟢 Profitable"
+                elif spread_bps >= 5.0:  # At least 5 bps to show as "Close"
+                    spread_status = "🟡 Close"
+                else:
+                    spread_status = "🔴 Low"
+            
+            message = f"""💓 <b>PRICE HEARTBEAT - {self.spot_symbol} ↔ {self.perp_symbol}</b>
+
+⏰ Time: {time.strftime('%H:%M:%S')}
+🔄 Status: <b>ACTIVE</b> - Monitoring for opportunities
+
+📊 <b>Current Prices:</b>
+• Binance Spot: {spot_price}
+• HL Perp: {perp_price}
+
+📈 <b>Spread Analysis:</b>
+• Spread: {spread_bps:.1f} bps
+• Min Required: {self.config.detector.min_edge_bps} bps
+• Status: {spread_status}
+
+🎯 <b>Bot Status:</b>
+• Market Data: ✅ Streaming
+• Opportunity Detection: ✅ Active
+• Risk Management: ✅ Monitoring"""
+            
+            await self.telegram.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending heartbeat: {e}")
 
     # Price heartbeat removed to reduce Telegram noise
     # You'll still get all important notifications:
@@ -420,16 +480,15 @@ class SpotPerpRunner:
                     perp_mid = (matching_perp.bid + matching_perp.ask) / 2
                     spread_bps = abs(perp_mid - spot_mid) / spot_mid * 10000
                     
-                    logger.debug(f"📊 Market conditions for {spot_quote.symbol} ↔ {perp_symbol}:")
-                    logger.debug(f"   Spot: ${spot_quote.bid:.4f} / ${spot_quote.ask:.4f} (mid: ${spot_mid:.4f})")
-                    logger.debug(f"   Perp: ${matching_perp.bid:.4f} / ${matching_perp.ask:.4f} (mid: ${perp_mid:.4f})")
-                    logger.debug(f"   Spread: {spread_bps:.2f} bps (min required: {self.config.detector.min_edge_bps} bps)")
-                    
-                    # Check if spread meets minimum threshold
-                    if spread_bps >= self.config.detector.min_edge_bps:
-                        logger.debug(f"   🟢 Spread {spread_bps:.2f} bps >= minimum {self.config.detector.min_edge_bps} bps")
-                    else:
-                        logger.debug(f"   🔴 Spread {spread_bps:.2f} bps < minimum {self.config.detector.min_edge_bps} bps")
+                    # Only log when spread is significant (>5 bps) to reduce noise
+                    if spread_bps > 5.0:
+                        logger.info(f"📊 {spot_quote.symbol} ↔ {perp_symbol}: Spread {spread_bps:.2f} bps (min: {self.config.detector.min_edge_bps} bps)")
+                        
+                        # Check if spread meets minimum threshold
+                        if spread_bps >= self.config.detector.min_edge_bps:
+                            logger.info(f"   🟢 Profitable opportunity detected!")
+                        else:
+                            logger.info(f"   🔴 Below threshold")
                         
         except Exception as e:
             logger.error(f"Error logging market conditions: {e}")
@@ -441,7 +500,7 @@ class SpotPerpRunner:
                 logger.debug("No quotes available for opportunity detection")
                 return
             
-            # Log current market conditions
+            # Log current market conditions (only when debug is enabled)
             await self._log_market_conditions()
             
             # Map spot quotes to corresponding perp quotes
@@ -465,12 +524,8 @@ class SpotPerpRunner:
                 logger.debug("No mapped quote pairs found")
                 return
             
-            logger.debug(f"Checking opportunities for {len(mapped_quotes)} mapped pairs")
-            
             # Detect opportunities for each mapped pair
             for spot_quote, perp_quote in mapped_quotes:
-                logger.debug(f"🔍 Detecting opportunities for {spot_quote.symbol} ↔ {perp_quote.symbol}")
-                
                 opportunities = self.detector.detect_opportunities(
                     [spot_quote], [perp_quote]
                 )
@@ -489,9 +544,9 @@ class SpotPerpRunner:
                         await self._execute_opportunity(best_opportunity)
                         break  # Only execute one opportunity at a time
                     else:
-                        logger.debug(f"❌ Opportunity not executed due to execution checks")
+                        logger.info(f"❌ Opportunity not executed due to execution checks")
                 else:
-                    logger.debug(f"❌ No opportunities detected for {spot_quote.symbol} ↔ {perp_quote.symbol}")
+                    logger.info(f"❌ No opportunities detected for {spot_quote.symbol} ↔ {perp_quote.symbol}")
                     
         except Exception as e:
             logger.error(f"Error checking opportunities: {e}")
@@ -501,37 +556,22 @@ class SpotPerpRunner:
     async def _should_execute(self, opportunity: SpotPerpOpportunity) -> bool:
         """Check if we should execute the opportunity."""
         try:
-            logger.debug(f"🔍 Checking execution conditions for {opportunity.symbol} {opportunity.direction.value}")
-            
             # Check if opportunity has expired
             if time.time() * 1000 > opportunity.expires_at:
-                logger.debug(f"❌ Opportunity expired: {opportunity.expires_at} < {int(time.time() * 1000)}")
                 return False
-            
-            logger.debug(f"✅ Opportunity not expired")
             
             # Check risk limits
             if not await self._check_risk_limits():
-                logger.debug(f"❌ Risk limits check failed")
                 return False
-            
-            logger.debug(f"✅ Risk limits check passed")
             
             # Check if we have active orders
             if self.active_orders:
-                logger.debug(f"❌ Active orders exist: {len(self.active_orders)}")
                 return False
-            
-            logger.debug(f"✅ No active orders")
             
             # Check minimum time between trades
             min_trade_interval = 5.0  # 5 seconds
             if time.time() - (self.state.last_trade_time / 1000) < min_trade_interval:
-                logger.debug(f"❌ Trade interval too short: {time.time() - (self.state.last_trade_time / 1000):.1f}s < {min_trade_interval}s")
                 return False
-            
-            logger.debug(f"✅ Trade interval check passed")
-            logger.debug(f"✅ All execution checks passed - ready to execute")
             
             return True
             

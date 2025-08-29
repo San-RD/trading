@@ -104,41 +104,27 @@ class SpotPerpDetector:
         """Detect spot↔perp arbitrage opportunities."""
         opportunities = []
         
-        logger.debug(f"🔍 Starting opportunity detection for {len(spot_quotes)} spot quotes and {len(perp_quotes)} perp quotes")
+        # Since quotes are already mapped by the runner, we can process them directly
+        if len(spot_quotes) != len(perp_quotes):
+            logger.warning(f"⚠️ Mismatched quote counts: {len(spot_quotes)} spot vs {len(perp_quotes)} perp")
+            return opportunities
         
-        # Create lookup for quotes by symbol
-        spot_lookup = {q.symbol: q for q in spot_quotes}
-        perp_lookup = {q.symbol: q for q in perp_quotes}
-        
-        logger.debug(f"📊 Spot symbols: {list(spot_lookup.keys())}")
-        logger.debug(f"📊 Perp symbols: {list(perp_lookup.keys())}")
-        
-        # Check each symbol for opportunities
-        for symbol in set(spot_lookup.keys()) & set(perp_lookup.keys()):
-            logger.debug(f"🎯 Checking symbol: {symbol}")
-            spot_quote = spot_lookup[symbol]
-            perp_quote = perp_lookup[symbol]
+        # Process each mapped pair
+        for i in range(len(spot_quotes)):
+            spot_quote = spot_quotes[i]
+            perp_quote = perp_quotes[i]
             
-            logger.debug(f"   Spot: ${spot_quote.bid:.4f} / ${spot_quote.ask:.4f} (spread: {spot_quote.spread_bps:.2f} bps)")
-            logger.debug(f"   Perp: ${perp_quote.bid:.4f} / ${perp_quote.ask:.4f} (spread: {perp_quote.spread_bps:.2f} bps)")
+            # Use spot symbol as the base symbol for the opportunity
+            symbol = spot_quote.symbol
             
             if not self._is_valid_quote_pair(spot_quote, perp_quote):
-                logger.debug(f"   ❌ Quote pair validation failed for {symbol}")
                 continue
-            
-            logger.debug(f"   ✅ Quote pair validation passed for {symbol}")
             
             # Check both directions
             for direction in SpotPerpDirection:
-                logger.debug(f"   🔄 Checking direction: {direction.value}")
                 opportunity = self._check_direction(symbol, spot_quote, perp_quote, direction)
                 if opportunity:
-                    logger.debug(f"   🎯 Opportunity found for {symbol} {direction.value}")
                     opportunities.append(opportunity)
-                else:
-                    logger.debug(f"   ❌ No opportunity for {symbol} {direction.value}")
-        
-        logger.debug(f"🎯 Total opportunities found: {len(opportunities)}")
         
         # Sort by net edge (descending)
         opportunities.sort(key=lambda x: x.net_edge_bps, reverse=True)
@@ -151,29 +137,25 @@ class SpotPerpDetector:
         current_time = int(time.time() * 1000)
         
         if current_time - spot_quote.ts_exchange > self.min_book_age_ms:
-            logger.debug(f"❌ Spot quote too old: {current_time - spot_quote.ts_exchange}ms > {self.min_book_age_ms}ms")
             return False
         
         if current_time - perp_quote.ts_exchange > self.min_book_age_ms:
-            logger.debug(f"❌ Perp quote too old: {current_time - perp_quote.ts_exchange}ms > {self.min_book_age_ms}ms")
             return False
         
-        # Check venue clock skew
+        # Check venue clock skew (more lenient in mock mode)
         skew_ms = abs(spot_quote.ts_exchange - perp_quote.ts_exchange)
-        if skew_ms > self.max_venue_skew_ms:
-            logger.debug(f"❌ Venue clock skew too high: {skew_ms}ms > {self.max_venue_skew_ms}ms")
+        # In mock mode, be more lenient with venue clock skew
+        max_skew = self.max_venue_skew_ms * 10 if hasattr(self, 'mock_mode') and self.mock_mode else self.max_venue_skew_ms
+        if skew_ms > max_skew:
             return False
         
         # Check spreads
         if spot_quote.spread_bps > self.max_spread_bps:
-            logger.debug(f"❌ Spot spread too wide: {spot_quote.spread_bps:.2f} bps > {self.max_spread_bps} bps")
             return False
         
         if perp_quote.spread_bps > self.max_spread_bps:
-            logger.debug(f"❌ Perp spread too wide: {perp_quote.spread_bps:.2f} bps > {self.max_spread_bps} bps")
             return False
         
-        logger.debug(f"✅ Quote pair validation passed - Age: spot={current_time - spot_quote.ts_exchange}ms, perp={current_time - perp_quote.ts_exchange}ms, skew={skew_ms}ms")
         return True
 
     def _check_direction(self, symbol: str, spot_quote: Any, perp_quote: Any, 

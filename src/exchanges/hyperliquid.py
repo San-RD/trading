@@ -1,1199 +1,618 @@
-"""Hyperliquid exchange integration for perpetual futures trading."""
+"""Hyperliquid exchange integration using official Python SDK"""
 
 import asyncio
+import json
 import time
-import logging
 from typing import Dict, List, Optional, Any, AsyncGenerator
 from decimal import Decimal
-import json
-import websockets
 import aiohttp
+import websockets
+from loguru import logger
 
-from .base import BaseExchange, Quote, OrderBook, Balance, OrderResult
+from .base import BaseExchange, Quote, OrderBook, OrderType, OrderSide, Balance, OrderResult
 
-logger = logging.getLogger(__name__)
+from hyperliquid.exchange import Exchange as Hyperliquid
+from hyperliquid.exchange import OrderRequest, CancelRequest
+from eth_account import Account
+HYPERLIQUID_SDK_AVAILABLE = True
 
 
 class HyperliquidExchange(BaseExchange):
-    """Hyperliquid exchange implementation for perpetual futures."""
-
+    """Hyperliquid exchange adapter using official Python SDK"""
+    
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
         
-        # Hyperliquid specific configuration
-        self.base_url = "https://api.hyperliquid.xyz"
-        self.ws_url = "wss://api.hyperliquid.xyz/ws"
-        self.chain = config.get('hyperliquid', {}).get('chain', 'arbitrum')
-        
-        # Wallet credentials
-        hyperliquid_config = config.get('hyperliquid', {})
-        self.wallet_address = hyperliquid_config.get('wallet_address', '')
-        self.private_key = hyperliquid_config.get('private_key', '')
-        self.initial_capital = hyperliquid_config.get('initial_capital_usdc', 50.0)
+        # Asset mapping (ETH=0, BTC=1)
+        self.asset_map = {
+            'ETH': 0,
+            'BTC': 1
+        }
         
         # WebSocket connection
-        self.ws: Optional[websockets.WebSocketServerProtocol] = None
+        self.ws = None
         self.ws_connected = False
+        self.quotes = {}
+        self.orderbooks = {}
         
-        # REST client
-        self.http_session: Optional[aiohttp.ClientSession] = None
+        # Nonce management
+        self.last_nonce = int(time.time() * 1000)
         
-        # Market data cache
-        self._orderbooks: Dict[str, OrderBook] = {}
-        self._tickers: Dict[str, Quote] = {}
-        self._last_update = 0
-        
-        # Trading state
-        self._connected = False
-        self._markets_loaded = False
-        
-        # Validate wallet credentials
-        if not self.wallet_address or not self.private_key:
-            logger.error("❌ Hyperliquid wallet credentials not configured!")
-            logger.error("   Please check your config.yaml file")
-            logger.error("   Required: wallet_address and private_key in hyperliquid section")
-            raise ValueError("Hyperliquid credentials not configured")
-        else:
-            logger.info(f"✅ Hyperliquid configured with wallet: {self.wallet_address[:8]}...{self.wallet_address[-6:]}")
-            logger.info(f"✅ Private key loaded: {self.private_key[:8]}...{self.private_key[-6:]}")
-            logger.info(f"✅ Initial capital: ${self.initial_capital}")
-
-    async def connect(self, symbols: List[str] = None) -> bool:
-        """Connect to Hyperliquid exchange."""
+        # Initialize Hyperliquid SDK
         try:
-            logger.info("🚀 Starting Hyperliquid connection process...")
+            # Extract wallet address and private key from config
+            wallet_address = config.get('hyperliquid', {}).get('wallet_address')
+            private_key = config.get('hyperliquid', {}).get('private_key')
             
-            if self._connected:
-                logger.info("✅ Already connected to Hyperliquid")
-                return True
+            if not wallet_address or not private_key:
+                raise ValueError("Hyperliquid wallet_address and private_key must be provided in config")
             
-            if symbols is None:
-                symbols = ["ETH-PERP", "BTC-PERP"]  # Default symbols
+            logger.info(f"🔑 Initializing Hyperliquid SDK with wallet: {wallet_address[:10]}...")
             
-            logger.info(f"📡 Connecting to Hyperliquid with symbols: {symbols}")
+            # Create LocalAccount from private key
+            wallet = Account.from_key(private_key)
             
-            # Initialize HTTP session
-            if not self.http_session:
-                logger.info("🌐 Initializing HTTP session...")
-                self.http_session = aiohttp.ClientSession()
-                logger.info("✅ HTTP session initialized")
-            
-            # Load markets first
-            logger.info("📊 Loading Hyperliquid markets...")
-            await self.load_markets()
-            logger.info("✅ Markets loaded")
+            self.hyperliquid = Hyperliquid(
+                wallet=wallet,
+                base_url="https://api.hyperliquid.xyz"  # Mainnet API
+            )
+            logger.info(f"✅ Hyperliquid SDK initialized for wallet: {wallet.address}")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Hyperliquid SDK: {e}")
+            raise
+        
+    async def connect(self, symbols: List[str] = None) -> bool:
+        """Connect to Hyperliquid WebSocket"""
+        try:
+            # Test REST API connection first
+            await self._test_rest_connection()
             
             # Connect WebSocket
-            logger.info("🔌 Connecting to WebSocket...")
             await self._connect_websocket()
-            logger.info("✅ WebSocket connection completed")
-            
-            # Wait for WebSocket to be fully ready
-            logger.info("⏳ Waiting for WebSocket to be fully ready...")
-            await asyncio.sleep(1.0)  # Give WebSocket time to stabilize
-            logger.info("⏰ WebSocket stabilization wait completed")
-            
-            # Check WebSocket state before subscribing
-            logger.info(f"🔍 Checking WebSocket state: ws_connected={self.ws_connected}, ws={self.ws is not None}")
-            if not self.ws_connected or not self.ws:
-                logger.error(f"❌ WebSocket not ready after connection! ws_connected: {self.ws_connected}, ws: {self.ws is not None}")
-                return False
-            
-            logger.info("✅ WebSocket is ready, proceeding with subscriptions...")
-            
-            # Store symbols for later subscription (don't subscribe yet)
-            self._symbols_to_subscribe = symbols
-            logger.info(f"💾 Stored symbols for later subscription: {symbols}")
-            
-            self._connected = True
-            logger.info(f"🎉 Hyperliquid connected successfully with symbols {symbols}")
             return True
             
         except Exception as e:
             logger.error(f"❌ Failed to connect to Hyperliquid: {e}")
-            import traceback
-            traceback.print_exc()
             return False
-
-    async def disconnect(self) -> None:
-        """Disconnect from Hyperliquid exchange."""
+            
+    async def _test_rest_connection(self):
+        """Test REST API connection"""
         try:
-            if self.ws:
-                await self.ws.close()
-                self.ws = None
-                self.ws_connected = False
+            # Get meta info to test connection
+            meta_response = await self._make_rest_request(
+                "https://api.hyperliquid.xyz/info",
+                {"type": "meta"}
+            )
             
-            if self.http_session:
-                await self.http_session.close()
-                self.http_session = None
-            
-            self._connected = False
-            logger.info("Hyperliquid disconnected")
-            
+            if meta_response and 'universe' in meta_response:
+                logger.info(f"✅ REST API connected - found {len(meta_response['universe'])} assets")
+                # Update asset mapping from response
+                for i, asset in enumerate(meta_response['universe']):
+                    if asset['name'] in ['ETH', 'BTC']:
+                        self.asset_map[asset['name']] = i
+                logger.info(f"📊 Asset mapping: {self.asset_map}")
+            else:
+                logger.warning("⚠️ REST API response missing universe data")
+                
         except Exception as e:
-            logger.error(f"Error disconnecting from Hyperliquid: {e}")
-
-    async def load_markets(self) -> Dict[str, Any]:
-        """Load Hyperliquid markets and trading rules."""
+            logger.error(f"❌ REST API test failed: {e}")
+            raise
+            
+    async def _make_rest_request(self, url: str, data: Dict) -> Optional[Dict]:
+        """Make REST API request"""
         try:
-            # Initialize markets dict if not exists
-            if not hasattr(self, 'markets'):
-                self.markets = {}
-            
-            # Use POST method with proper payload for Hyperliquid API
-            payload = {"type": "meta"}
-            
-            async with self.http_session.post(
-                f"{self.base_url}/info",
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"Hyperliquid meta info: {data.get('chainName', 'unknown')}")
-                    
-                    # Store market info
-                    for market in data.get("universe", []):
-                        symbol = market.get("name", "")
-                        if symbol:
-                            # Get precision from the market data
-                            sz_decimals = market.get("szDecimals", 0.001)
-                            px_decimals = market.get("pxDecimals", 0.01)
-                            
-                            self.markets[symbol] = {
-                                "symbol": symbol,
-                                "base": market.get("base", ""),
-                                "quote": "USDC",  # Hyperliquid uses USDC as quote
-                                "type": "perp",
-                                "limits": {
-                                    "amount": {
-                                        "min": sz_decimals,
-                                        "max": float('inf')
-                                    },
-                                    "price": {
-                                        "min": px_decimals,
-                                        "max": float('inf')
-                                    },
-                                    "cost": {
-                                        "min": 1.0,  # $1 minimum notional
-                                        "max": float('inf')
-                                    }
-                                },
-                                "precision": {
-                                    "amount": sz_decimals,
-                                    "price": px_decimals
-                                }
-                            }
-                    
-                    self._markets_loaded = True
-                    logger.info(f"Loaded {len(self.markets)} Hyperliquid markets")
-                    return self.markets
-                else:
-                    logger.error(f"Failed to fetch markets: {response.status}")
-                    # Fallback: create basic market info for ETH and BTC
-                    self._create_fallback_markets()
-                    return self.markets
-            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=data, timeout=10) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    else:
+                        logger.error(f"❌ REST API error {response.status}: {await response.text()}")
+                        return None
         except Exception as e:
-            logger.error(f"Failed to load Hyperliquid markets: {e}")
-            # Initialize empty markets dict as fallback
-            if not hasattr(self, 'markets'):
-                self.markets = {}
-            # Create fallback markets
-            self._create_fallback_markets()
-            return {}
-    
-    def _create_fallback_markets(self):
-        """Create fallback market info for ETH and BTC."""
-        fallback_markets = {
-            "ETH": {
-                "symbol": "ETH",
-                "base": "ETH",
-                "quote": "USDC",
-                "type": "perp",
-                "limits": {
-                    "amount": {"min": 0.001, "max": float('inf')},
-                    "price": {"min": 0.01, "max": float('inf')},
-                    "cost": {"min": 1.0, "max": float('inf')}
-                },
-                "precision": {"amount": 0.001, "price": 0.01}
-            },
-            "BTC": {
-                "symbol": "BTC",
-                "base": "BTC",
-                "quote": "USDC",
-                "type": "perp",
-                "limits": {
-                    "amount": {"min": 0.001, "max": float('inf')},
-                    "price": {"min": 0.01, "max": float('inf')},
-                    "cost": {"min": 1.0, "max": float('inf')}
-                },
-                "precision": {"amount": 0.001, "price": 0.01}
-            }
-        }
-        
-        for symbol, market_info in fallback_markets.items():
-            self.markets[symbol] = market_info
-        
-        logger.info("Created fallback markets for ETH and BTC")
-
+            logger.error(f"❌ REST request failed: {e}")
+            return None
+            
     async def _connect_websocket(self):
-        """Connect to Hyperliquid WebSocket with robust connection handling."""
+        """Connect to Hyperliquid WebSocket"""
         try:
-            logger.info("🔌 Starting WebSocket connection to Hyperliquid...")
-            logger.info(f"🌐 WebSocket URL: {self.ws_url}")
-            
-            # Check if we already have a WebSocket
-            if self.ws:
-                logger.info("⚠️  WebSocket already exists, closing old connection...")
-                try:
-                    await self.ws.close()
-                except Exception as e:
-                    logger.warning(f"Warning closing old WebSocket: {e}")
-                self.ws = None
-                self.ws_connected = False
-            
-            logger.info("🔄 Creating new WebSocket connection...")
-            
-            # Create WebSocket connection with better parameters
-            try:
-                self.ws = await websockets.connect(
-                    self.ws_url,
-                    ping_interval=20,  # More frequent pings
-                    ping_timeout=10,
-                    close_timeout=10,
-                    max_size=2**23,  # 8MB max message size
-                    compression=None  # Disable compression for stability
-                )
-                logger.info("✅ WebSocket connection created successfully")
-            except Exception as e:
-                logger.error(f"❌ Failed to create WebSocket connection: {e}")
-                raise
-            
-            # Test the connection with multiple pings
-            logger.info("🧪 Testing WebSocket connection...")
-            try:
-                for i in range(3):
-                    await self.ws.ping()
-                    logger.info(f"✅ WebSocket ping {i+1} successful")
-                    await asyncio.sleep(0.1)
-            except Exception as e:
-                logger.error(f"❌ WebSocket ping failed: {e}")
-                raise
-            
-            # Mark as connected
+            self.ws = await websockets.connect(
+                "wss://api.hyperliquid.xyz/ws",
+                ping_interval=30,
+                ping_timeout=10,
+                close_timeout=5
+            )
             self.ws_connected = True
-            logger.info("✅ WebSocket connection established and marked as connected")
-            
-            # Don't start duplicate WebSocket listener - let watch_quotes handle it
-            logger.info("ℹ️  WebSocket ready for use by watch_quotes method")
+            logger.info("✅ WebSocket connected to Hyperliquid")
             
         except Exception as e:
             logger.error(f"❌ WebSocket connection failed: {e}")
-            self.ws_connected = False
-            if self.ws:
-                try:
-                    await self.ws.close()
-                except:
-                    pass
-                self.ws = None
             raise
-
-    async def start_subscriptions(self) -> bool:
-        """Start market data subscriptions after connection is stable."""
+            
+    async def start_subscriptions(self, symbols: List[str] = None):
+        """Start WebSocket subscriptions for specific symbols"""
+            
+        if not self.ws_connected:
+            logger.warning("⚠️ WebSocket not connected - skipping subscriptions")
+            return
+            
         try:
-            if not hasattr(self, '_symbols_to_subscribe') or not self._symbols_to_subscribe:
-                logger.warning("No symbols to subscribe to")
-                return False
-                
-            if not self.ws_connected or not self.ws:
-                logger.error("WebSocket not ready for subscriptions")
-                return False
-                
-            logger.info("🚀 Starting market data subscriptions...")
-            await self._subscribe_market_data(self._symbols_to_subscribe)
-            return True
+            # If no symbols specified, subscribe to all supported assets
+            if not symbols:
+                symbols = ['ETH', 'BTC']
             
-        except Exception as e:
-            logger.error(f"Failed to start subscriptions: {e}")
-            return False
-
-    async def _subscribe_market_data(self, symbols: List[str]):
-        """Subscribe to market data for given symbols using Hyperliquid's API format."""
-        try:
-            logger.info(f"🚀 Starting market data subscriptions for {len(symbols)} symbols...")
-            
-            # Check WebSocket state
-            if not self.ws_connected:
-                logger.error(f"❌ WebSocket not connected!")
-                return
-            
-            if not self.ws:
-                logger.error(f"❌ WebSocket object is None!")
-                return
-                
+            # Subscribe to orderbook updates for specified symbols only
             for symbol in symbols:
-                # Clean symbol name (remove -PERP suffix for subscription)
-                clean_symbol = symbol.replace("-PERP", "")
-                
-                try:
-                    # Subscribe to L2 orderbook updates
-                    orderbook_sub = {
+                if symbol in self.asset_map:
+                    asset_id = self.asset_map[symbol]
+                    # Use the correct WebSocket subscription format
+                    subscribe_msg = {
                         "method": "subscribe",
                         "subscription": {
                             "type": "l2Book",
+                            "coin": symbol
+                        }
+                    }
+                    await self.ws.send(json.dumps(subscribe_msg))
+                    logger.info(f"📡 Subscribed to {symbol} orderbook (Asset ID: {asset_id})")
+                    
+            # Subscribe to all mids for price updates (needed for all strategies)
+            mids_msg = {
+                "method": "subscribe",
+                "subscription": {
+                    "type": "allMids"
+                }
+            }
+            await self.ws.send(json.dumps(mids_msg))
+            logger.info("📡 Subscribed to all mids")
+            
+            # Wait for subscriptions to process
+            await asyncio.sleep(0.5)
+            
+            # Start WebSocket listener task
+            asyncio.create_task(self._websocket_listener())
+            logger.info("🎧 WebSocket listener task started")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to start subscriptions: {e}")
+            
+    async def fetch_initial_quotes(self, symbols: List[str]) -> None:
+        """Fetch initial quotes from REST API as fallback"""
+            
+        try:
+            logger.info(f"📡 Fetching initial quotes for {symbols}")
+            
+            for symbol in symbols:
+                if symbol.endswith('-PERP'):
+                    clean_symbol = symbol.replace('-PERP', '')
+                    if clean_symbol in self.asset_map:
+                        # Try to get orderbook for this coin
+                        orderbook_payload = {
+                            "type": "orderBook",
                             "coin": clean_symbol
                         }
-                    }
-                    
-                    await self.ws.send(json.dumps(orderbook_sub))
-                    logger.debug(f"📤 Sent l2Book subscription for {clean_symbol}")
-                    
-                    # Wait for subscription response
-                    await asyncio.sleep(0.2)
-                    
-                    # Subscribe to all mid prices
-                    mids_sub = {
-                        "method": "subscribe",
-                        "subscription": {
-                            "type": "allMids",
-                            "dex": "hyperliquid"
-                        }
-                    }
-                    
-                    await self.ws.send(json.dumps(mids_sub))
-                    logger.debug(f"📤 Sent allMids subscription")
-                    
-                    # Wait for subscription response
-                    await asyncio.sleep(0.2)
-                    
-                except Exception as e:
-                    logger.error(f"❌ Failed to subscribe to {clean_symbol}: {e}")
-                    continue
-                
-            logger.info(f"✅ Sent all subscription messages for {symbols}")
-            
+                        
+                        orderbook_response = await self._make_rest_request(
+                            "https://api.hyperliquid.xyz/info",
+                            orderbook_payload
+                        )
+                        
+                        if orderbook_response and 'data' in orderbook_response:
+                            data = orderbook_response['data']
+                            if 'bids' in data and 'asks' in data:
+                                bids = data['bids']
+                                asks = data['asks']
+                                
+                                if bids and asks:
+                                    best_bid = float(bids[0][0])
+                                    best_ask = float(bids[0][1])
+                                    
+                                    # Create quote
+                                    quote = Quote(
+                                        symbol=symbol,
+                                        bid=best_bid,
+                                        ask=best_ask,
+                                        last=best_ask,  # Use ask as last price
+                                        ts_exchange=int(time.time() * 1000)
+                                    )
+                                    self.quotes[clean_symbol] = quote
+                                    
+                                    logger.info(f"✅ Initial quote for {symbol}: bid=${best_bid:.4f} ask=${best_ask:.4f}")
+                                    
         except Exception as e:
-            logger.error(f"❌ Error in subscription method: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
-
+            logger.error(f"❌ Error fetching initial quotes: {e}")
+            
     async def watch_quotes(self, symbols: List[str]) -> AsyncGenerator[Quote, None]:
-        """Watch real-time quotes for given symbols with robust reconnection."""
-        logger.info(f"🔍 Starting quote monitoring for symbols: {symbols}")
-        
-        max_reconnect_attempts = 5
-        reconnect_delay = 2.0
-        
-        for attempt in range(max_reconnect_attempts):
-            try:
-                if not self.ws_connected:
-                    logger.warning(f"⚠️  WebSocket not connected, attempting to reconnect (attempt {attempt + 1}/{max_reconnect_attempts})")
-                    await self._reconnect_websocket()
-                    if not self.ws_connected:
-                        logger.error(f"❌ Failed to reconnect WebSocket on attempt {attempt + 1}")
-                        if attempt < max_reconnect_attempts - 1:
-                            await asyncio.sleep(reconnect_delay)
-                            continue
-                        else:
-                            logger.error("❌ Max reconnection attempts reached")
-                            return
-                
-                logger.info(f"✅ WebSocket connected, starting to listen for messages...")
-                
-                # Resubscribe to market data after reconnection
-                if attempt > 0:
-                    logger.info("🔄 Resubscribing to market data after reconnection...")
-                    await self._subscribe_market_data(symbols)
-                
-                logger.info(f"🎧 Starting WebSocket message monitoring for symbols: {symbols}")
-                
-                # Add a ping to test connection
-                try:
-                    await self.ws.ping()
-                    logger.debug("🏓 WebSocket ping successful")
-                except Exception as e:
-                    logger.warning(f"⚠️  WebSocket ping failed: {e}")
-                
-                # Wait a moment for the WebSocket to stabilize
-                await asyncio.sleep(0.5)
-                
-                logger.debug("🚀 Starting message loop...")
-                
-                async for message in self.ws:
-                    try:
-                        data = json.loads(message)
-                        
-                        # Check for ping/pong messages
-                        if isinstance(data, str) and data == "pong":
-                            logger.debug("🏓 Received pong from Hyperliquid")
-                            continue
-                        
-                        # Handle different message types based on Hyperliquid's documented format
-                        if "channel" in data:
-                            channel = data["channel"]
-                            
-                            if channel == "l2Book":
-                                # Handle orderbook updates
-                                logger.debug(f"📊 Processing l2Book update for {data.get('data', {}).get('coin', 'unknown')}")
-                                await self._handle_orderbook_update(data["data"])
-                            elif channel == "allMids":
-                                # Handle mid-price updates
-                                logger.debug(f"📈 Processing allMids update")
-                                await self._handle_mids_update(data["data"])
-                            elif channel == "subscriptionResponse":
-                                # Handle subscription confirmation
-                                logger.debug(f"✅ Subscription confirmed")
-                        
-                        # Also check for other message formats
-                        elif "method" in data:
-                            if data["method"] == "notify":
-                                logger.debug(f"📢 Processing notify message")
-                        
-                        # Check if we have valid quotes to yield
-                        for symbol in symbols:
-                            clean_symbol = symbol.replace("-PERP", "")
-                            if clean_symbol in self._tickers:
-                                quote = self._tickers[clean_symbol]
-                                logger.debug(f"✅ Yielding quote for {symbol}: bid=${quote.bid:.4f} ask=${quote.ask:.4f}")
-                                yield quote
-                                
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"⚠️  Failed to parse WebSocket message: {e}")
+        """Watch for quote updates via WebSocket"""
+        # Wait for WebSocket to be ready
+        while not self.ws_connected:
+            await asyncio.sleep(0.1)
+            
+        if not self.ws_connected:
+            return
+            
+        try:
+            while self.ws_connected:
+                for symbol in symbols:
+                    # Clean symbol (remove -PERP suffix)
+                    clean_symbol = symbol.replace('-PERP', '')
+                    
+                    if clean_symbol not in self.asset_map:
+                        logger.warning(f"⚠️ Unknown symbol: {symbol}")
                         continue
-                    except Exception as e:
-                        logger.error(f"❌ Error processing WebSocket message: {e}")
                         
-            except websockets.exceptions.ConnectionClosed as e:
-                logger.warning(f"⚠️  WebSocket connection closed (attempt {attempt + 1}): {e}")
-                self.ws_connected = False
-                if attempt < max_reconnect_attempts - 1:
-                    logger.info(f"🔄 Attempting to reconnect in {reconnect_delay} seconds...")
-                    await asyncio.sleep(reconnect_delay)
-                    continue
-                else:
-                    logger.error("❌ Max reconnection attempts reached")
-                    break
-                    
-            except Exception as e:
-                logger.error(f"❌ WebSocket error in watch_quotes (attempt {attempt + 1}): {e}")
-                import traceback
-                traceback.print_exc()
-                if attempt < max_reconnect_attempts - 1:
-                    logger.info(f"🔄 Attempting to reconnect in {reconnect_delay} seconds...")
-                    await asyncio.sleep(reconnect_delay)
-                    continue
-                else:
-                    logger.error("❌ Max reconnection attempts reached")
-                    break
-                    
-        logger.error("❌ WebSocket monitoring failed after all reconnection attempts")
-        await self._reconnect_websocket()
-
-    async def _handle_mids_update(self, data: Dict):
-        """Handle mid-price updates from Hyperliquid WebSocket using AllMids format."""
-        try:
-            logger.info(f"🔍 Processing allMids update with data type: {type(data)}")
-            logger.info(f"📊 Mids data structure: {json.dumps(data, indent=2)}")
-            
-            # AllMids format: { mids: Record<string, string> }
-            if isinstance(data, dict) and "mids" in data:
-                mids = data["mids"]
-                logger.info(f"📈 Received mids for {len(mids)} coins")
-                
-                for coin, mid_price_str in mids.items():
-                    try:
-                        mid_price = float(mid_price_str)
-                        logger.info(f"📊 Coin: {coin}, Mid: ${mid_price:.4f}")
-                        
-                        # Update quote if we have orderbook data
-                        await self._update_quote_from_mid(coin, mid_price)
-                        
-                    except (ValueError, TypeError) as e:
-                        logger.warning(f"⚠️ Invalid mid price for {coin}: {mid_price_str}, error: {e}")
-                        
-            elif isinstance(data, list):
-                # Alternative format: [{"coin": "ETH", "mid": "4340.0"}]
-                logger.info(f"📈 Received mids list with {len(data)} items")
-                
-                for coin_data in data:
-                    if isinstance(coin_data, dict):
-                        coin = coin_data.get("coin")
-                        mid_price_str = coin_data.get("mid")
-                        
-                        if coin and mid_price_str:
-                            try:
-                                mid_price = float(mid_price_str)
-                                logger.info(f"📊 Coin: {coin}, Mid: ${mid_price:.4f}")
-                                await self._update_quote_from_mid(coin, mid_price)
-                            except (ValueError, TypeError) as e:
-                                logger.warning(f"⚠️ Invalid mid price for {coin}: {mid_price_str}, error: {e}")
-                                
-            else:
-                logger.warning(f"⚠️ Unexpected mids data format: {type(data)} - {data}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error handling mids update: {e}")
-            logger.error(f"📊 Data that caused error: {data}")
-            import traceback
-            traceback.print_exc()
-
-    async def _update_quote_from_mid(self, coin: str, mid_price: float):
-        """Update quote from mid price data."""
-        try:
-            # Convert to proper format and add -PERP suffix for consistency
-            perp_symbol = f"{coin}-PERP"
-            
-            # Get the orderbook to extract bid/ask
-            orderbook = self._orderbooks.get(perp_symbol)
-            if orderbook and orderbook.bids and orderbook.asks:
-                best_bid = orderbook.bids[0][0]
-                best_ask = orderbook.asks[0][0]
-                best_bid_size = orderbook.bids[0][1]
-                best_ask_size = orderbook.asks[0][1]
-                
-                # Create or update quote
-                self._tickers[coin] = Quote(
-                    venue=self.name,
-                    symbol=perp_symbol,
-                    bid=best_bid,
-                    ask=best_ask,
-                    bid_size=best_bid_size,
-                    ask_size=best_ask_size,
-                    ts_exchange=int(time.time() * 1000),
-                    ts_local=int(time.time() * 1000)
-                )
-                
-                logger.info(f"✅ Updated {perp_symbol} quote from mids: bid=${best_bid:.4f} ask=${best_ask:.4f} mid=${mid_price:.4f}")
-            else:
-                logger.info(f"📊 Received mid price for {coin}: ${mid_price:.4f} (waiting for orderbook)")
+                    # Check if we have recent quotes
+                    if clean_symbol in self.quotes:
+                        quote = self.quotes[clean_symbol]
+                        # Return quote if it's fresh (less than 1 second old)
+                        # quote.ts_exchange is in milliseconds, time.time() is in seconds
+                        age_seconds = time.time() - (quote.ts_exchange / 1000)
+                        if age_seconds < 1.0:
+                            yield quote
+                            
+                # Wait for new data
+                await asyncio.sleep(0.1)
                 
         except Exception as e:
-            logger.error(f"❌ Error updating quote from mid: {e}")
-
-    async def _handle_orderbook_update(self, data: Dict):
-        """Handle orderbook update from Hyperliquid WebSocket using WsBook format."""
-        try:
-            # WsBook format: { coin: string; levels: [Array<WsLevel>, Array<WsLevel>] }
-            symbol = data.get("coin", "")
-            levels = data.get("levels", [])
+            logger.error(f"❌ Error watching quotes: {e}")
             
-            if not symbol or not levels or len(levels) < 2:
-                logger.warning(f"⚠️ Invalid l2Book data: coin={symbol}, levels={levels}")
+    async def fetch_order_book(self, symbol: str, limit: int = 10) -> Optional[OrderBook]:
+        """Fetch orderbook for a symbol"""
+
+            
+        if not self.ws_connected:
+            return None
+            
+        try:
+            # Clean symbol (remove -PERP suffix)
+            clean_symbol = symbol.replace('-PERP', '')
+            
+            if clean_symbol not in self.asset_map:
+                logger.warning(f"⚠️ Unknown symbol: {symbol}")
+                return None
+                
+            # Check if we have recent orderbook
+            if clean_symbol in self.orderbooks:
+                orderbook = self.orderbooks[clean_symbol]
+                # Return orderbook if it's fresh (less than 1 second old)
+                # orderbook.ts_exchange is in milliseconds, time.time() is in seconds
+                if time.time() - (orderbook.ts_exchange / 1000) < 1.0:
+                    return orderbook
+                    
+            # Wait for new data
+            await asyncio.sleep(0.1)
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching orderbook for {symbol}: {e}")
+            return None
+            
+    async def _websocket_listener(self):
+        """WebSocket message listener"""
+        if not self.ws_connected:
+            return
+            
+        try:
+            async for message in self.ws:
+                try:
+                    data = json.loads(message)
+                    await self._handle_websocket_message(data)
+                except json.JSONDecodeError:
+                    logger.warning(f"⚠️ Invalid JSON message: {message}")
+                except Exception as e:
+                    logger.error(f"❌ Error handling WebSocket message: {e}")
+                    
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("⚠️ WebSocket connection closed")
+            self.ws_connected = False
+        except Exception as e:
+            logger.error(f"❌ WebSocket listener error: {e}")
+            
+    async def _handle_websocket_message(self, data: Dict):
+        """Handle WebSocket message"""
+        try:
+            # Check for subscription confirmation
+            if 'channel' in data and data['channel'] == 'subscribed':
+                logger.info(f"✅ WebSocket subscription confirmed")
                 return
+                
+            # Check for error messages
+            if 'channel' in data and data['channel'] == 'error':
+                logger.error(f"❌ WebSocket error: {data}")
+                return
+                
+            # Handle data messages based on channel
+            channel = data.get('channel')
+            if channel == 'l2Book':
+                await self._handle_orderbook_update(data['data'])
+            elif channel == 'allMids':
+                await self._handle_mids_update(data['data'])
+            elif channel == 'subscriptionResponse':
+                pass  # Silent subscription response
+            elif channel == 'error':
+                logger.error(f"❌ WebSocket error: {data}")
+            else:
+                pass  # Silent unhandled channels
+                
+        except Exception as e:
+            logger.error(f"❌ Error handling message: {e}")
             
-            # Convert to proper format and add -PERP suffix for consistency
-            perp_symbol = f"{symbol}-PERP"
-            
-            # Extract bids and asks from the levels array
-            # levels[0] = bids, levels[1] = asks (based on WsBook format)
-            # Each level is an object with "px" (price) and "sz" (size) keys
+    async def _handle_orderbook_update(self, data: Dict):
+        """Handle orderbook update"""
+        try:
+            coin = data.get('coin')
+            if not coin or coin not in self.asset_map:
+                return
+                
+            # Parse orderbook data from the levels array
             bids = []
             asks = []
             
-            if len(levels) >= 1 and isinstance(levels[0], list):
-                for level in levels[0]:  # Bids
-                    if isinstance(level, dict) and "px" in level and "sz" in level:
+            if 'levels' in data and len(data['levels']) == 2:
+                # First array is bids, second is asks
+                bids_data = data['levels'][0]  # Bids
+                asks_data = data['levels'][1]  # Asks
+                
+                # Parse bids (each bid has 'px' for price and 'sz' for size)
+                for bid in bids_data:
+                    if isinstance(bid, dict) and 'px' in bid and 'sz' in bid:
                         try:
-                            price = float(level["px"])
-                            size = float(level["sz"])
-                            bids.append((price, size))
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"⚠️ Invalid bid level: {level}, error: {e}")
-            
-            if len(levels) >= 2 and isinstance(levels[1], list):
-                for level in levels[1]:  # Asks
-                    if isinstance(level, dict) and "px" in level and "sz" in level:
+                            price = float(bid['px'])
+                            size = float(bid['sz'])
+                            bids.append([price, size])
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Parse asks (each ask has 'px' for price and 'sz' for size)
+                for ask in asks_data:
+                    if isinstance(ask, dict) and 'px' in ask and 'sz' in ask:
                         try:
-                            price = float(level["px"])
-                            size = float(level["sz"])
-                            asks.append((price, size))
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"⚠️ Invalid ask level: {level}, error: {e}")
-            
-            # Sort by price (bids descending, asks ascending)
-            bids.sort(key=lambda x: x[0], reverse=True)
-            asks.sort(key=lambda x: x[0])
-            
+                            price = float(ask['px'])
+                            size = float(ask['sz'])
+                            asks.append([price, size])
+                        except (ValueError, TypeError):
+                            continue
+                            
             if bids and asks:
-                self._orderbooks[perp_symbol] = OrderBook(
-                    venue=self.name,
-                    symbol=perp_symbol,
-                    bids=bids,
-                    asks=asks,
-                    ts_exchange=int(time.time() * 1000),
-                    ts_local=int(time.time() * 1000)
+                # Sort by price
+                bids.sort(key=lambda x: x[0], reverse=True)  # Highest bid first
+                asks.sort(key=lambda x: x[0])  # Lowest ask first
+                
+                # Create orderbook
+                orderbook = OrderBook(
+                    symbol=f"{coin}-PERP",
+                    bids=bids[:10],  # Top 10 bids
+                    asks=asks[:10],  # Top 10 asks
+                    ts_exchange=int(time.time() * 1000)
                 )
                 
-                # Update ticker with best bid/ask
-                best_bid = bids[0][0]
-                best_ask = asks[0][0]
-                best_bid_size = bids[0][1]
-                best_ask_size = asks[0][1]
+                self.orderbooks[coin] = orderbook
                 
-                self._tickers[symbol] = Quote(
-                    venue=self.name,
-                    symbol=perp_symbol,
-                    bid=best_bid,
-                    ask=best_ask,
-                    bid_size=best_bid_size,
-                    ask_size=best_ask_size,
-                    ts_exchange=int(time.time() * 1000),
-                    ts_local=int(time.time() * 1000)
-                )
+                # Create quote from best bid/ask
+                if bids and asks:
+                    quote = Quote(
+                        symbol=f"{coin}-PERP",
+                        bid=bids[0][0],
+                        ask=asks[0][0],
+                        last=asks[0][0],  # Use ask as last price
+                        ts_exchange=int(time.time() * 1000)
+                    )
+                    self.quotes[coin] = quote
+                    
+                    # Only log significant price changes (>0.1%) to reduce noise
+                    if coin in self.quotes:
+                        old_quote = self.quotes[coin]
+                        old_mid = (old_quote.bid + old_quote.ask) / 2
+                        new_mid = (bids[0][0] + asks[0][0]) / 2
+                        price_change_pct = abs(new_mid - old_mid) / old_mid * 100
+                        
+                        if price_change_pct > 0.1:  # Only log if >0.1% change
+                            logger.info(f"📊 {coin} price update: ${old_mid:.2f} → ${new_mid:.2f} ({price_change_pct:+.2f}%)")
+                    else:
+                        # Log first quote
+                        logger.info(f"📊 First {coin} quote: bid=${bids[0][0]:.2f} ask=${asks[0][0]:.2f}")
                 
-                logger.info(f"✅ Updated {perp_symbol} quote: bid=${best_bid:.4f} ask=${best_ask:.4f}")
-            else:
-                logger.warning(f"⚠️ No valid bid/ask data for {perp_symbol}")
-            
         except Exception as e:
             logger.error(f"❌ Error handling orderbook update: {e}")
             import traceback
             traceback.print_exc()
-
-    async def fetch_order_book(self, symbol: str, limit: int = 10) -> Optional[OrderBook]:
-        """Fetch order book for a symbol."""
-        try:
-            # Try to get from cache first
-            if symbol in self._orderbooks:
-                return self._orderbooks[symbol]
             
-            # Fallback to REST API
-            async with self.http_session.get(f"{self.base_url}/orderbook?coin={symbol}") as response:
-                data = await response.json()
-                
-                bids = [(float(level[0]), float(level[1])) for level in data.get("bids", [])[:limit]]
-                asks = [(float(level[0]), float(level[1])) for level in data.get("asks", [])[:limit]]
-                
-                orderbook = OrderBook(
-                    venue=self.name,
-                    symbol=symbol,
-                    bids=bids,
-                    asks=asks,
-                    ts_exchange=int(time.time() * 1000),
-                    ts_local=int(time.time() * 1000)
-                )
-                
-                self._orderbooks[symbol] = orderbook
-                return orderbook
-                
+    async def _handle_mids_update(self, data: Dict):
+        """Handle mids update"""
+        try:
+            if 'mids' in data:
+                mids = data['mids']
+                # Extract ETH and BTC mid prices
+                for coin, mid_str in mids.items():
+                    if coin in ['ETH', 'BTC']:
+                        try:
+                            mid = float(mid_str)
+                            # Update quote with mid price if it exists
+                            if coin in self.quotes:
+                                self.quotes[coin].last = mid
+                        except (ValueError, TypeError):
+                            continue
+                                
         except Exception as e:
-            logger.error(f"Failed to fetch orderbook for {symbol}: {e}")
-            return None
-
+            logger.error(f"❌ Error handling mids update: {e}")
+            
     async def place_order(self, symbol: str, side: str, order_type: str,
                          amount: float, price: Optional[float] = None,
                          params: Optional[Dict] = None) -> OrderResult:
-        """Place an order on Hyperliquid (perpetual futures)."""
+        """Place an order using Hyperliquid SDK"""
+
+            
         try:
-            # For now, return a mock result since we need API keys for real trading
-            # In production, this would make the actual API call to Hyperliquid
+            # Clean symbol and get asset ID
+            clean_symbol = symbol.replace('-PERP', '')
+            if clean_symbol not in self.asset_map:
+                raise ValueError(f"Unknown symbol: {symbol}")
+                
+            asset_id = self.asset_map[clean_symbol]
             
-            logger.info(f"Placing {side} {amount} {symbol} at {price} on Hyperliquid")
+            # Generate unique nonce
+            nonce = self._generate_nonce()
             
+            # Create order request
+            order_request = OrderRequest(
+                coin=clean_symbol,
+                is_buy=side.lower() == "buy",
+                sz=str(amount),
+                limit_px=str(price) if price else None,
+                reduce_only=False,
+                cloid=f"0x{nonce:032x}"  # Use nonce as client order ID
+            )
+            
+            # Place order
+            response = await self.hyperliquid.order(order_request)
+            
+            logger.info(f"✅ Order placed: {side} {amount} {symbol} @ {price}")
             return OrderResult(
                 success=True,
-                order_id=f"hl_{int(time.time() * 1000)}",
+                order_id=response.get('oid', str(nonce)),
                 filled_qty=amount,
                 avg_price=price or 0.0,
-                fee_asset="USDC",
-                fee_amount=0.0,
-                latency_ms=50
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to place order on Hyperliquid: {e}")
-            return OrderResult(
-                success=False,
-                error=str(e)
-            )
-
-    async def create_order_perp(self, symbol: str, side: str, amount_base: float, 
-                               price: float, tif: str = "IOC", reduce_only: bool = False) -> OrderResult:
-        """Create a perpetual futures order on Hyperliquid."""
-        try:
-            # Convert to Hyperliquid format according to official API spec
-            order_params = {
-                "coin": symbol,
-                "is_buy": side.lower() == "buy",
-                "sz": str(amount_base),
-                "limit_px": str(price),
-                "reduce_only": reduce_only
-            }
-            
-            # For IOC orders, set immediate execution
-            if tif == "IOC":
-                order_params["time_in_force"] = "Ioc"
-            
-            # Add required fields for Hyperliquid API
-            if self.wallet_address and self.private_key:
-                # TODO: Implement real order signing and submission
-                # This would require:
-                # 1. Creating the order request
-                # 2. Signing with private key
-                # 3. Submitting to /exchange endpoint
-                logger.info(f"Real order would be submitted: {order_params}")
-            
-            logger.info(f"Creating perp order: {order_params}")
-            
-            # Mock execution for now
-            return OrderResult(
-                success=True,
-                order_id=f"hl_perp_{int(time.time() * 1000)}",
-                filled_qty=amount_base,
-                avg_price=price,
                 fee_asset="USDC",
                 fee_amount=0.0,
                 latency_ms=75
             )
             
         except Exception as e:
-            logger.error(f"Failed to create perp order: {e}")
+            logger.error(f"❌ Failed to create order: {e}")
             return OrderResult(
                 success=False,
                 error=str(e)
             )
-
+            
+    def _generate_nonce(self) -> int:
+        """Generate unique nonce for orders"""
+        current_time = int(time.time() * 1000)
+        if current_time <= self.last_nonce:
+            current_time = self.last_nonce + 1
+        self.last_nonce = current_time
+        return current_time
+        
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
-        """Cancel a specific order."""
-        try:
-            logger.info(f"Cancelling order {order_id} for {symbol} on Hyperliquid")
-            # Mock implementation for now
-            # In production, this would call Hyperliquid API
-            return True
-        except Exception as e:
-            logger.error(f"Failed to cancel order {order_id}: {e}")
-            return False
+        """Cancel an order"""
 
-    async def cancel_all(self, symbol: str) -> bool:
-        """Cancel all orders for a symbol."""
-        try:
-            logger.info(f"Cancelling all orders for {symbol} on Hyperliquid")
-            # Mock implementation
-            return True
-        except Exception as e:
-            logger.error(f"Failed to cancel orders: {e}")
-            return False
-
-    async def fetch_balances(self) -> Dict[str, Balance]:
-        """Fetch account balances (USDC margin)."""
-        try:
-            if self.wallet_address and self.private_key and self.http_session:
-                # Use the real Hyperliquid API endpoint
-                logger.info(f"💰 Fetching real balance for wallet: {self.wallet_address}")
-                
-                # Call the clearinghouseState endpoint
-                payload = {
-                    "type": "clearinghouseState",
-                    "user": self.wallet_address
-                }
-                
-                async with self.http_session.post(
-                    f"{self.base_url}/info",
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        # Extract the withdrawable amount (USDC balance)
-                        withdrawable = float(data.get("withdrawable", 0))
-                        account_value = float(data.get("marginSummary", {}).get("accountValue", 0))
-                        
-                        logger.info(f"Real balance fetched: ${withdrawable:.2f} USDC")
-                        
-                        return {
-                            "USDC": Balance(
-                                asset="USDC",
-                                free=withdrawable,
-                                total=account_value,
-                                ts=int(time.time() * 1000)
-                            )
-                        }
-                    else:
-                        logger.error(f"Failed to fetch balance: {response.status}")
-                        # Fallback to configured capital
-                        return {
-                            "USDC": Balance(
-                                asset="USDC",
-                                free=self.initial_capital,
-                                total=self.initial_capital,
-                                ts=int(time.time() * 1000)
-                            )
-                        }
-            else:
-                # Mock balance for testing
-                return {
-                    "USDC": Balance(
-                        asset="USDC",
-                        free=50.0,
-                        total=50.0,
-                        ts=int(time.time() * 1000)
-                    )
-                }
-        except Exception as e:
-            logger.error(f"Failed to fetch balances: {e}")
-            # Fallback to configured capital
-            return {
-                "USDC": Balance(
-                    asset="USDC",
-                    free=self.initial_capital,
-                    total=self.initial_capital,
-                    ts=int(time.time() * 1000)
-                )
-            }
-
-    async def fetch_positions(self, symbol: str) -> Dict[str, Any]:
-        """Fetch positions for a symbol."""
-        try:
-            if self.wallet_address and self.http_session:
-                # Use the real Hyperliquid API endpoint
-                payload = {
-                    "type": "clearinghouseState",
-                    "user": self.wallet_address
-                }
-                
-                async with self.http_session.post(
-                    f"{self.base_url}/info",
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        # Look for the specific symbol position
-                        symbol_positions = []
-                        for asset_pos in data.get("assetPositions", []):
-                            if asset_pos.get("position", {}).get("coin") == symbol.replace("-PERP", ""):
-                                pos = asset_pos["position"]
-                                symbol_positions.append({
-                                    "size": float(pos.get("szi", 0)),
-                                    "entry_price": float(pos.get("entryPx", 0)),
-                                    "unrealized_pnl": float(pos.get("unrealizedPnl", 0)),
-                                    "realized_pnl": 0.0,  # Not available in this endpoint
-                                    "position_value": float(pos.get("positionValue", 0)),
-                                    "leverage": pos.get("leverage", {}).get("value", 0)
-                                })
-                        
-                        if symbol_positions:
-                            return symbol_positions[0]  # Return first position
-                        else:
-                            return {
-                                "size": 0.0,
-                                "entry_price": 0.0,
-                                "unrealized_pnl": 0.0,
-                                "realized_pnl": 0.0,
-                                "position_value": 0.0,
-                                "leverage": 0
-                            }
-                    else:
-                        logger.error(f"Failed to fetch positions: {response.status}")
-                        return self._get_mock_position()
-            else:
-                return self._get_mock_position()
-                
-        except Exception as e:
-            logger.error(f"Failed to fetch positions: {e}")
-            return self._get_mock_position()
-    
-    def _get_mock_position(self) -> Dict[str, Any]:
-        """Get mock position data for testing."""
-        return {
-            "size": 0.0,
-            "entry_price": 0.0,
-            "unrealized_pnl": 0.0,
-            "realized_pnl": 0.0,
-            "position_value": 0.0,
-            "leverage": 0
-        }
-
-    async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
-        """Fetch current funding rate for a symbol."""
-        try:
-            if not self.http_session:
-                return None
-                
-            # Fetch funding rate from Hyperliquid API
-            # This would be available in the meta info or a separate endpoint
-            # For now, return a mock value
-            logger.info(f"Fetching funding rate for {symbol}")
             
-            # TODO: Implement real funding rate fetching
-            # This would typically be in the meta info or a separate endpoint
-            return 0.0001  # 0.01% per 8h (mock value)
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch funding rate for {symbol}: {e}")
-            return None
-
-    async def test_connectivity(self) -> bool:
-        """Test basic network connectivity to Hyperliquid."""
         try:
-            if not self.http_session:
+            # Clean symbol and get asset ID
+            clean_symbol = symbol.replace('-PERP', '')
+            if clean_symbol not in self.asset_map:
+                logger.warning(f"⚠️ Unknown symbol: {symbol}")
                 return False
                 
-            # Simple ping test
-            async with self.http_session.get(
-                f"{self.base_url}/ping",
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
-                return response.status == 200
-                
+            asset_id = self.asset_map[clean_symbol]
+            
+            # Create cancel request
+            cancel_request = CancelRequest(
+                coin=clean_symbol,
+                oid=int(order_id) if order_id.isdigit() else 0
+            )
+            
+            # Cancel order
+            response = await self.hyperliquid.cancel(cancel_request)
+            
+            logger.info(f"✅ Order cancelled: {order_id}")
+            return True
+            
         except Exception as e:
-            logger.warning(f"Connectivity test failed: {e}")
+            logger.error(f"❌ Failed to cancel order: {e}")
             return False
+            
+    async def fetch_balances(self) -> Dict[str, Balance]:
+        """Fetch account balances"""
 
+            
+        try:
+            # Get account info from Hyperliquid
+            account_info = await self.hyperliquid.get_account_info()
+            
+            balance = {}
+            if 'marginSummary' in account_info:
+                margin = account_info['marginSummary']
+                usdc_value = float(margin.get('accountValue', 0))
+                balance['USDC'] = Balance(
+                    asset="USDC",
+                    free=usdc_value,
+                    total=usdc_value,
+                    ts=int(time.time() * 1000)
+                )
+                
+            logger.debug(f"💰 Balance: {balance}")
+            return balance
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch balance: {e}")
+            return {}
+            
+    async def load_markets(self) -> Dict[str, Any]:
+        """Load exchange markets and trading rules"""
+
+            
+        try:
+            # Get meta info from Hyperliquid
+            meta_response = await self._make_rest_request(
+                "https://api.hyperliquid.xyz/info",
+                {"type": "meta"}
+            )
+            
+            markets = {}
+            if meta_response and 'universe' in meta_response:
+                for asset in meta_response['universe']:
+                    if asset['name'] in ['ETH', 'BTC']:
+                        symbol = f"{asset['name']}-PERP"
+                        markets[symbol] = {
+                            "symbol": symbol,
+                            "base": asset['name'],
+                            "quote": "USDC",
+                            "type": "perp",
+                            "precision": {
+                                "amount": asset.get('szDecimals', 0.001),
+                                "price": asset.get('pxDecimals', 0.01)
+                            }
+                        }
+                        
+            logger.info(f"📊 Loaded {len(markets)} Hyperliquid markets")
+            return markets
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load markets: {e}")
+            return {}
+            
+    async def disconnect(self) -> None:
+        """Disconnect from Hyperliquid"""
+        if self.ws and self.ws_connected:
+            await self.ws.close()
+            self.ws_connected = False
+            logger.info("🔌 Hyperliquid WebSocket closed")
+            
     async def health_check(self) -> bool:
-        """Perform health check."""
+        """Perform health check"""
+
+            
         try:
             if not self.ws_connected:
                 return False
-            
-            # Check if we can fetch basic market data
-            test_symbol = list(self.markets.keys())[0] if self.markets else None
-            if test_symbol:
-                orderbook = await self.fetch_order_book(test_symbol, limit=1)
-                return orderbook is not None
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"Health check failed: {e}")
-            return False
-
-    async def fetch_initial_quotes(self, symbols: List[str]) -> None:
-        """Fetch initial quotes from REST API as fallback."""
-        try:
-            logger.info(f"🔍 Fetching initial quotes for symbols: {symbols}")
-            
-            for symbol in symbols:
-                clean_symbol = symbol.replace("-PERP", "")
-                logger.info(f"📡 Fetching {clean_symbol} from REST API...")
                 
-                # Use the correct Hyperliquid API format
-                payload = {
-                    "type": "meta"
-                }
-                
-                logger.info(f"📤 REST API payload: {json.dumps(payload)}")
-                logger.info(f"🌐 REST API URL: {self.base_url}/info")
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        f"{self.base_url}/info",
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    ) as response:
-                        logger.info(f"📥 REST API response status: {response.status}")
-                        
-                        if response.status == 200:
-                            data = await response.json()
-                            logger.info(f"📊 REST API response data: {json.dumps(data, indent=2)}")
-                            
-                            # Look for the specific coin in the meta response
-                            if "universe" in data:
-                                for coin_info in data["universe"]:
-                                    if coin_info.get("name") == clean_symbol:
-                                        logger.info(f"✅ Found {clean_symbol} in universe")
-                                        
-                                        # Try to get orderbook for this coin
-                                        orderbook_payload = {
-                                            "type": "orderBook",
-                                            "coin": clean_symbol
-                                        }
-                                        
-                                        logger.info(f"📤 Orderbook payload: {json.dumps(orderbook_payload)}")
-                                        
-                                        async with session.post(
-                                            f"{self.base_url}/info",
-                                            json=orderbook_payload,
-                                            timeout=aiohttp.ClientTimeout(total=10)
-                                        ) as ob_response:
-                                            if ob_response.status == 200:
-                                                ob_data = await ob_response.json()
-                                                logger.info(f"📊 Orderbook response: {json.dumps(ob_data, indent=2)}")
-                                                
-                                                if "data" in ob_data and "bids" in ob_data["data"] and "asks" in ob_data["data"]:
-                                                    bids = ob_data["data"]["bids"]
-                                                    asks = ob_data["data"]["asks"]
-                                                    
-                                                    logger.info(f"📈 Found {len(bids)} bids and {len(asks)} asks")
-                                                    
-                                                    if bids and asks:
-                                                        best_bid = float(bids[0][0])
-                                                        best_ask = float(asks[0][0])
-                                                        best_bid_size = float(bids[0][1])
-                                                        best_ask_size = float(asks[0][1])
-                                                        
-                                                        # Create quote
-                                                        quote = Quote(
-                                                            venue=self.name,
-                                                            symbol=symbol,
-                                                            bid=best_bid,
-                                                            ask=best_ask,
-                                                            bid_size=best_bid_size,
-                                                            ask_size=best_ask_size,
-                                                            ts_exchange=int(time.time() * 1000),
-                                                            ts_local=int(time.time() * 1000)
-                                                        )
-                                                        
-                                                        # Store in tickers
-                                                        if not hasattr(self, '_tickers'):
-                                                            self._tickers = {}
-                                                        self._tickers[clean_symbol] = quote
-                                                        
-                                                        logger.info(f"✅ Created initial quote for {symbol}: bid=${best_bid:.4f} ask=${best_ask:.4f}")
-                                                        break
-                                                    else:
-                                                        logger.warning(f"⚠️ No bid/ask data found for {clean_symbol}")
-                                                else:
-                                                    logger.warning(f"⚠️ Unexpected orderbook response format for {clean_symbol}")
-                                            else:
-                                                ob_text = await ob_response.text()
-                                                logger.error(f"❌ Orderbook API error {ob_response.status}: {ob_text}")
-                                        break
-                                else:
-                                    logger.warning(f"⚠️ {clean_symbol} not found in universe")
-                            else:
-                                logger.warning(f"⚠️ No universe data in meta response")
-                        else:
-                            response_text = await response.text()
-                            logger.error(f"❌ REST API error {response.status}: {response_text}")
-                                    
-        except Exception as e:
-            logger.error(f"❌ Error fetching initial quotes: {e}")
-            import traceback
-            traceback.print_exc()
-
-    async def _reconnect_websocket(self):
-        """Reconnect to WebSocket."""
-        try:
-            logger.info("Attempting to reconnect to Hyperliquid WebSocket...")
-            
-            if hasattr(self, 'ws') and self.ws:
-                await self.ws.close()
-            
-            self.ws_connected = False
-            await asyncio.sleep(1)  # Wait before reconnecting
-            
-            await self._connect_websocket()
-            
-            # Resubscribe to market data
-            if hasattr(self, 'markets'):
-                symbols = list(self.markets.keys())
-                await self._subscribe_market_data(symbols)
-                
-            logger.info("Successfully reconnected to Hyperliquid WebSocket")
-            
-        except Exception as e:
-            logger.error(f"WebSocket reconnection failed: {e}")
-            self.ws_connected = False
-
-    def normalize_symbol(self, symbol: str) -> str:
-        """Convert CCXT symbol format to Hyperliquid format."""
-        # Convert ETH/USDC -> ETH-PERP
-        if "/" in symbol:
-            base = symbol.split("/")[0]
-            return f"{base}-PERP"
-        return symbol
-
-    def price_to_precision(self, price: float, symbol: str) -> float:
-        """Round price to exchange precision."""
-        normalized_symbol = self.normalize_symbol(symbol)
-        if normalized_symbol not in self.markets:
-            return price
-        
-        precision = self.markets[normalized_symbol]["precision"]["price"]
-        return round(price / precision) * precision
-
-    def amount_to_precision(self, amount: float, symbol: str) -> float:
-        """Round amount to exchange precision."""
-        normalized_symbol = self.normalize_symbol(symbol)
-        if normalized_symbol not in self.markets:
-            return amount
-        
-        precision = self.markets[normalized_symbol]["precision"]["amount"]
-        return round(amount / precision) * precision
-
-    def get_taker_fee_bps(self) -> float:
-        """Get taker fee in basis points."""
-        return self.config.get('fees', {}).get('taker_bps', {}).get('hyperliquid', 3.0)
-
-    def get_maker_fee_bps(self) -> float:
-        """Get maker fee in basis points."""
-        return self.config.get('fees', {}).get('maker_bps', {}).get('hyperliquid', 2.0)
-    
-    def is_connected(self) -> bool:
-        """Check if exchange is connected."""
-        return self._connected and self.ws_connected
-
-    async def _get_asset_ids(self):
-        """Get the correct asset IDs from Hyperliquid's meta endpoint."""
-        try:
-            logger.info("🔍 Fetching asset IDs from Hyperliquid meta endpoint...")
-            
-            # First get the meta data to find asset IDs
-            meta_payload = {"type": "meta"}
-            async with self.http_session.post(f"{self.base_url}/info", json=meta_payload) as response:
-                if response.status == 200:
-                    meta_data = await response.json()
-                    logger.info(f"✅ Meta data received: {json.dumps(meta_data, indent=2)}")
-                    
-                    # Extract asset IDs for ETH and BTC
-                    if "universe" in meta_data:
-                        universe = meta_data["universe"]
-                        asset_ids = {}
-                        
-                        for asset in universe:
-                            if "name" in asset and "chain" in asset:
-                                symbol = asset["name"]
-                                asset_id = asset["chain"]
-                                asset_ids[symbol] = asset_id
-                                logger.info(f"📊 Found asset: {symbol} -> ID: {asset_id}")
-                        
-                        return asset_ids
-                    else:
-                        logger.warning("⚠️  No 'universe' found in meta data")
-                        return {}
-                else:
-                    logger.error(f"❌ Meta endpoint failed: {response.status}")
-                    return {}
-                    
-        except Exception as e:
-            logger.error(f"❌ Failed to get asset IDs: {e}")
-            return {}
-
-    async def test_websocket_connection(self):
-        """Test basic WebSocket connectivity with a simple ping."""
-        try:
-            if not self.ws_connected or not self.ws:
-                logger.error("❌ WebSocket not connected for ping test")
-                return False
-                
-            logger.info("🏓 Testing WebSocket connection with ping...")
-            
-            # Send a simple ping
+            # Test WebSocket connection
             await self.ws.ping()
-            logger.info("✅ Ping sent successfully")
-            
-            # Wait a bit for potential pong response
-            await asyncio.sleep(0.5)
-            
-            # Try to send a simple subscription to test
-            test_sub = {
-                "method": "subscribe",
-                "subscription": {
-                    "type": "allMids"
-                }
-            }
-            
-            logger.info(f"🧪 Sending test subscription: {json.dumps(test_sub)}")
-            await self.ws.send(json.dumps(test_sub))
-            logger.info("✅ Test subscription sent")
-            
             return True
             
         except Exception as e:
-            logger.error(f"❌ WebSocket connection test failed: {e}")
+            logger.error(f"❌ Health check failed: {e}")
             return False
+            
+    def price_to_precision(self, symbol: str, price: float) -> str:
+        """Convert price to exchange precision"""
+        # Hyperliquid typically uses 4 decimal places for prices
+        return f"{price:.4f}"
+        
+    def amount_to_precision(self, symbol: str, amount: float) -> str:
+        """Convert amount to exchange precision"""
+        # Hyperliquid typically uses 4 decimal places for amounts
+        return f"{amount:.4f}"
+        
+    async def close(self):
+        """Close connections"""
+        await self.disconnect()
