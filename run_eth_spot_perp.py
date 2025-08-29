@@ -33,6 +33,21 @@ async def main():
         # Load configuration from file
         config = Config.load_from_file("config.yaml")
         
+        # Set up logging based on config
+        log_level = getattr(logging, config.logging.level.upper(), logging.INFO)
+        logging.basicConfig(
+            level=log_level,
+            format='%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        
+        # Also set loguru level
+        from loguru import logger
+        logger.remove()  # Remove default handler
+        logger.add(sys.stderr, level=log_level, format='{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}')
+        
+        print(f"🔧 Logging level set to: {config.logging.level.upper()}")
+        
         # DEBUG: Show what API keys are actually loaded
         print("🔍 DEBUG: Checking loaded API keys...")
         print(f"   Binance API Key: {config.exchanges.accounts['binance'].key[:20]}...")
