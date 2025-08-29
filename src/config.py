@@ -38,7 +38,7 @@ class SymbolConfig(BaseModel):
 
 class DetectorConfig(BaseModel):
     """Arbitrage detection configuration."""
-    min_edge_bps: float = 28.0  # Updated to realistic threshold
+    min_edge_bps: float = 10.0  # Use config.yaml value
     min_book_bbo_age_ms: int = 300  # Reduced for faster detection
     max_spread_bps: float = 15.0  # Tighter spreads
     max_notional_usdc: float = 25.0
@@ -114,7 +114,7 @@ class DepthModelConfig(BaseModel):
 
 class RealisticTradingConfig(BaseModel):
     """Realistic trading parameters."""
-    min_net_edge_after_slippage: float = 35.0  # 35 bps = 0.35% minimum edge after fees + slippage
+    min_net_edge_after_slippage: float = 0.5  # 0.5 bps = 0.005% minimum edge after fees + slippage
     slippage_estimation_method: str = "linear_slope"  # linear | exponential | none
     partial_fill_handling: str = "unwind"  # unwind | retry | accept
     rebalance_cost_accounting: bool = True  # Track rebalance costs
