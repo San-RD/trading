@@ -104,23 +104,41 @@ class SpotPerpDetector:
         """Detect spot↔perp arbitrage opportunities."""
         opportunities = []
         
+        logger.debug(f"🔍 Starting opportunity detection for {len(spot_quotes)} spot quotes and {len(perp_quotes)} perp quotes")
+        
         # Create lookup for quotes by symbol
         spot_lookup = {q.symbol: q for q in spot_quotes}
         perp_lookup = {q.symbol: q for q in perp_quotes}
         
+        logger.debug(f"📊 Spot symbols: {list(spot_lookup.keys())}")
+        logger.debug(f"📊 Perp symbols: {list(perp_lookup.keys())}")
+        
         # Check each symbol for opportunities
         for symbol in set(spot_lookup.keys()) & set(perp_lookup.keys()):
+            logger.debug(f"🎯 Checking symbol: {symbol}")
             spot_quote = spot_lookup[symbol]
             perp_quote = perp_lookup[symbol]
             
+            logger.debug(f"   Spot: ${spot_quote.bid:.4f} / ${spot_quote.ask:.4f} (spread: {spot_quote.spread_bps:.2f} bps)")
+            logger.debug(f"   Perp: ${perp_quote.bid:.4f} / ${perp_quote.ask:.4f} (spread: {perp_quote.spread_bps:.2f} bps)")
+            
             if not self._is_valid_quote_pair(spot_quote, perp_quote):
+                logger.debug(f"   ❌ Quote pair validation failed for {symbol}")
                 continue
+            
+            logger.debug(f"   ✅ Quote pair validation passed for {symbol}")
             
             # Check both directions
             for direction in SpotPerpDirection:
+                logger.debug(f"   🔄 Checking direction: {direction.value}")
                 opportunity = self._check_direction(symbol, spot_quote, perp_quote, direction)
                 if opportunity:
+                    logger.debug(f"   🎯 Opportunity found for {symbol} {direction.value}")
                     opportunities.append(opportunity)
+                else:
+                    logger.debug(f"   ❌ No opportunity for {symbol} {direction.value}")
+        
+        logger.debug(f"🎯 Total opportunities found: {len(opportunities)}")
         
         # Sort by net edge (descending)
         opportunities.sort(key=lambda x: x.net_edge_bps, reverse=True)
@@ -133,28 +151,29 @@ class SpotPerpDetector:
         current_time = int(time.time() * 1000)
         
         if current_time - spot_quote.ts_exchange > self.min_book_age_ms:
-            logger.debug(f"Spot quote too old: {current_time - spot_quote.ts_exchange}ms")
+            logger.debug(f"❌ Spot quote too old: {current_time - spot_quote.ts_exchange}ms > {self.min_book_age_ms}ms")
             return False
         
         if current_time - perp_quote.ts_exchange > self.min_book_age_ms:
-            logger.debug(f"Perp quote too old: {current_time - perp_quote.ts_exchange}ms")
+            logger.debug(f"❌ Perp quote too old: {current_time - perp_quote.ts_exchange}ms > {self.min_book_age_ms}ms")
             return False
         
         # Check venue clock skew
         skew_ms = abs(spot_quote.ts_exchange - perp_quote.ts_exchange)
         if skew_ms > self.max_venue_skew_ms:
-            logger.debug(f"Venue clock skew too high: {skew_ms}ms")
+            logger.debug(f"❌ Venue clock skew too high: {skew_ms}ms > {self.max_venue_skew_ms}ms")
             return False
         
         # Check spreads
         if spot_quote.spread_bps > self.max_spread_bps:
-            logger.debug(f"Spot spread too wide: {spot_quote.spread_bps:.2f} bps")
+            logger.debug(f"❌ Spot spread too wide: {spot_quote.spread_bps:.2f} bps > {self.max_spread_bps} bps")
             return False
         
         if perp_quote.spread_bps > self.max_spread_bps:
-            logger.debug(f"Perp spread too wide: {perp_quote.spread_bps:.2f} bps")
+            logger.debug(f"❌ Perp spread too wide: {perp_quote.spread_bps:.2f} bps > {self.max_spread_bps} bps")
             return False
         
+        logger.debug(f"✅ Quote pair validation passed - Age: spot={current_time - spot_quote.ts_exchange}ms, perp={current_time - perp_quote.ts_exchange}ms, skew={skew_ms}ms")
         return True
 
     def _check_direction(self, symbol: str, spot_quote: Any, perp_quote: Any, 
@@ -183,7 +202,10 @@ class SpotPerpDetector:
             
             # Check minimum gross edge
             if gross_edge_bps < self.min_edge_bps:
+                logger.debug(f"❌ Gross edge {gross_edge_bps:.2f} bps < minimum {self.min_edge_bps} bps for {symbol} {direction.value}")
                 return None
+            
+            logger.debug(f"✅ Gross edge {gross_edge_bps:.2f} bps >= minimum {self.min_edge_bps} bps for {symbol} {direction.value}")
             
             # Calculate fees
             spot_fee_bps = self.fees.taker_bps.get(self.spot_exchange.name, 7.5)
@@ -198,12 +220,19 @@ class SpotPerpDetector:
             
             # Check minimum net edge
             if net_edge_bps < self.min_net_edge:
+                logger.debug(f"❌ Net edge {net_edge_bps:.2f} bps < minimum {self.min_net_edge} bps for {symbol} {direction.value}")
+                logger.debug(f"   Breakdown: Gross {gross_edge_bps:.2f} - Fees {total_fees_bps:.2f} - Slippage {self.slippage_buffer_bps:.2f} - Funding {funding_cost_bps:.2f} = {net_edge_bps:.2f}")
                 return None
+            
+            logger.debug(f"✅ Net edge {net_edge_bps:.2f} bps >= minimum {self.min_net_edge} bps for {symbol} {direction.value}")
             
             # Calculate trade size based on available liquidity
             trade_size = self._calculate_trade_size(spot_quote, perp_quote, direction)
             if trade_size <= 0:
+                logger.debug(f"❌ Trade size {trade_size:.4f} <= 0 for {symbol} {direction.value}")
                 return None
+            
+            logger.debug(f"✅ Trade size {trade_size:.4f} > 0 for {symbol} {direction.value}")
             
             # Create opportunity
             opportunity = SpotPerpOpportunity(

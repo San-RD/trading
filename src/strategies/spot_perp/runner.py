@@ -479,11 +479,52 @@ class SpotPerpRunner:
             import traceback
             traceback.print_exc()
 
+    async def _log_market_conditions(self):
+        """Log current market conditions for debugging."""
+        try:
+            if not self.spot_quotes or not self.perp_quotes:
+                return
+            
+            for spot_quote in self.spot_quotes:
+                base_asset = spot_quote.symbol.split('/')[0]
+                perp_symbol = f"{base_asset}-PERP"
+                
+                # Find matching perp quote
+                matching_perp = None
+                for perp_quote in self.perp_quotes:
+                    if perp_quote.symbol == perp_symbol:
+                        matching_perp = perp_quote
+                        break
+                
+                if matching_perp:
+                    # Calculate current spread
+                    spot_mid = (spot_quote.bid + spot_quote.ask) / 2
+                    perp_mid = (matching_perp.bid + matching_perp.ask) / 2
+                    spread_bps = abs(perp_mid - spot_mid) / spot_mid * 10000
+                    
+                    logger.debug(f"📊 Market conditions for {spot_quote.symbol} ↔ {perp_symbol}:")
+                    logger.debug(f"   Spot: ${spot_quote.bid:.4f} / ${spot_quote.ask:.4f} (mid: ${spot_mid:.4f})")
+                    logger.debug(f"   Perp: ${matching_perp.bid:.4f} / ${matching_perp.ask:.4f} (mid: ${perp_mid:.4f})")
+                    logger.debug(f"   Spread: {spread_bps:.2f} bps (min required: {self.config.detector.min_edge_bps} bps)")
+                    
+                    # Check if spread meets minimum threshold
+                    if spread_bps >= self.config.detector.min_edge_bps:
+                        logger.debug(f"   🟢 Spread {spread_bps:.2f} bps >= minimum {self.config.detector.min_edge_bps} bps")
+                    else:
+                        logger.debug(f"   🔴 Spread {spread_bps:.2f} bps < minimum {self.config.detector.min_edge_bps} bps")
+                        
+        except Exception as e:
+            logger.error(f"Error logging market conditions: {e}")
+
     async def _check_opportunities(self):
         """Check for arbitrage opportunities."""
         try:
             if not self.spot_quotes or not self.perp_quotes:
+                logger.debug("No quotes available for opportunity detection")
                 return
+            
+            # Log current market conditions
+            await self._log_market_conditions()
             
             # Map spot quotes to corresponding perp quotes
             mapped_quotes = []
@@ -503,48 +544,76 @@ class SpotPerpRunner:
                     mapped_quotes.append((spot_quote, matching_perp))
             
             if not mapped_quotes:
+                logger.debug("No mapped quote pairs found")
                 return
+            
+            logger.debug(f"Checking opportunities for {len(mapped_quotes)} mapped pairs")
             
             # Detect opportunities for each mapped pair
             for spot_quote, perp_quote in mapped_quotes:
+                logger.debug(f"🔍 Detecting opportunities for {spot_quote.symbol} ↔ {perp_quote.symbol}")
+                
                 opportunities = self.detector.detect_opportunities(
                     [spot_quote], [perp_quote]
                 )
                 
                 if opportunities:
                     self.state.opportunities_detected += len(opportunities)
-                    logger.info(f"Detected {len(opportunities)} opportunities for {spot_quote.symbol} ↔ {perp_quote.symbol}")
+                    logger.info(f"🎯 Detected {len(opportunities)} opportunities for {spot_quote.symbol} ↔ {perp_quote.symbol}")
                     
                     # Take the best opportunity
                     best_opportunity = opportunities[0]
+                    logger.info(f"📊 Best opportunity: {best_opportunity.gross_edge_bps:.2f} bps gross, {best_opportunity.net_edge_bps:.2f} bps net")
                     
                     # Check if we should execute
                     if await self._should_execute(best_opportunity):
+                        logger.info(f"🚀 Executing opportunity: {best_opportunity.symbol} {best_opportunity.direction.value}")
                         await self._execute_opportunity(best_opportunity)
                         break  # Only execute one opportunity at a time
+                    else:
+                        logger.debug(f"❌ Opportunity not executed due to execution checks")
+                else:
+                    logger.debug(f"❌ No opportunities detected for {spot_quote.symbol} ↔ {perp_quote.symbol}")
                     
         except Exception as e:
             logger.error(f"Error checking opportunities: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def _should_execute(self, opportunity: SpotPerpOpportunity) -> bool:
         """Check if we should execute the opportunity."""
         try:
+            logger.debug(f"🔍 Checking execution conditions for {opportunity.symbol} {opportunity.direction.value}")
+            
             # Check if opportunity has expired
             if time.time() * 1000 > opportunity.expires_at:
+                logger.debug(f"❌ Opportunity expired: {opportunity.expires_at} < {int(time.time() * 1000)}")
                 return False
+            
+            logger.debug(f"✅ Opportunity not expired")
             
             # Check risk limits
             if not await self._check_risk_limits():
+                logger.debug(f"❌ Risk limits check failed")
                 return False
+            
+            logger.debug(f"✅ Risk limits check passed")
             
             # Check if we have active orders
             if self.active_orders:
+                logger.debug(f"❌ Active orders exist: {len(self.active_orders)}")
                 return False
+            
+            logger.debug(f"✅ No active orders")
             
             # Check minimum time between trades
             min_trade_interval = 5.0  # 5 seconds
             if time.time() - (self.state.last_trade_time / 1000) < min_trade_interval:
+                logger.debug(f"❌ Trade interval too short: {time.time() - (self.state.last_trade_time / 1000):.1f}s < {min_trade_interval}s")
                 return False
+            
+            logger.debug(f"✅ Trade interval check passed")
+            logger.debug(f"✅ All execution checks passed - ready to execute")
             
             return True
             
