@@ -33,6 +33,13 @@ async def main():
         # Load configuration from file
         config = Config.load_from_file("config.yaml")
         
+        # DEBUG: Show what API keys are actually loaded
+        print("🔍 DEBUG: Checking loaded API keys...")
+        print(f"   Binance API Key: {config.exchanges.accounts['binance'].key[:20]}...")
+        print(f"   Binance Secret: {config.exchanges.accounts['binance'].secret[:20]}...")
+        print(f"   Binance Sandbox: {config.exchanges.accounts['binance'].sandbox}")
+        print("=" * 60)
+        
         # Create ETH/USDC route configuration
         route = RouteConfig(
             name="ETH_binance_spot__hl_perp",
