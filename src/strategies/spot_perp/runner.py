@@ -351,7 +351,6 @@ class SpotPerpRunner:
         try:
             last_heartbeat = time.time()
             last_hourly_summary = time.time()
-            last_price_heartbeat = time.time()  # Price heartbeat timer
             
             while self.state.is_running:
                 try:
@@ -362,11 +361,6 @@ class SpotPerpRunner:
                         if not self.state.is_paused:
                             await self._check_opportunities()
                         last_heartbeat = current_time
-                    
-                    # Send price heartbeat every 30 seconds
-                    if current_time - last_price_heartbeat >= 30:  # Every 30 seconds
-                        await self._send_price_heartbeat()
-                        last_price_heartbeat = current_time
                     
                     # Send hourly summary
                     if current_time - last_hourly_summary >= 3600:  # Every hour
@@ -395,89 +389,13 @@ class SpotPerpRunner:
             logger.info("Main loop exited, cleaning up...")
             await self.stop()
 
-    async def _send_price_heartbeat(self):
-        """Send price heartbeat to show bot is working and monitoring prices."""
-        try:
-            if not self.telegram:
-                logger.warning("No Telegram notifier available for heartbeat")
-                return
-                
-            # Get current prices from both exchanges
-            spot_price = None
-            perp_price = None
-            
-            # Get spot price from Binance
-            if hasattr(self, 'spot_quotes') and self.spot_quotes:
-                spot_quote = self.spot_quotes[0]  # Get first quote
-                spot_price = (spot_quote.bid + spot_quote.ask) / 2
-                spot_bid = spot_quote.bid
-                spot_ask = spot_quote.ask
-            else:
-                logger.warning("No spot quotes available")
-                return
-            
-            # Get perp price from Hyperliquid
-            if hasattr(self, 'perp_quotes') and self.perp_quotes:
-                perp_quote = self.perp_quotes[0]  # Get first quote
-                perp_price = (perp_quote.bid + perp_quote.ask) / 2
-                perp_bid = perp_quote.bid
-                perp_ask = perp_quote.ask
-            else:
-                logger.warning("No perp quotes available")
-                return
-            
-            if spot_price and perp_price:
-                # Calculate spread
-                spread_bps = abs(perp_price - spot_price) / spot_price * 10000
-                
-                # Format heartbeat message
-                message = f"""
-💓 <b>PRICE HEARTBEAT - {self.spot_symbol} ↔ {self.perp_symbol}</b>
-
-⏰ Time: {datetime.now().strftime('%H:%M:%S')}
-🔄 Status: <b>ACTIVE</b> - Monitoring for opportunities
-
-📊 <b>Current Prices:</b>
-• Binance Spot: ${spot_price:.4f} (${spot_bid:.4f} / ${spot_ask:.4f})
-• HL Perp: ${perp_price:.4f} (${perp_bid:.4f} / ${perp_ask:.4f})
-
-📈 <b>Spread Analysis:</b>
-• Spread: {spread_bps:.1f} bps
-• Min Required: {self.config.detector.min_edge_bps} bps
-• Status: {'🟢 Profitable' if spread_bps >= self.config.detector.min_edge_bps else '🔴 Below threshold'}
-
-🎯 <b>Bot Status:</b>
-• Market Data: ✅ Streaming
-• Opportunity Detection: ✅ Active
-• Risk Management: ✅ Monitoring
-                """
-                
-                await self.telegram.send_message(message)
-                logger.info(f"Price heartbeat sent - Spot: ${spot_price:.4f}, Perp: ${perp_price:.4f}, Spread: {spread_bps:.1f} bps")
-            else:
-                # Send a simple status heartbeat even without prices
-                message = f"""
-💓 <b>STATUS HEARTBEAT - {self.spot_symbol} ↔ {self.perp_symbol}</b>
-
-⏰ Time: {datetime.now().strftime('%H:%M:%S')}
-🔄 Status: <b>ACTIVE</b> - Waiting for market data
-
-📊 <b>Current Status:</b>
-• Bot: ✅ Running
-• Market Data: ⏳ Initializing
-• Opportunity Detection: ✅ Active
-• Risk Management: ✅ Monitoring
-
-💡 <b>Note:</b> Waiting for first price quotes from exchanges...
-                """
-                
-                await self.telegram.send_message(message)
-                logger.info("Status heartbeat sent (waiting for price data)")
-            
-        except Exception as e:
-            logger.error(f"Error sending price heartbeat: {e}")
-            import traceback
-            traceback.print_exc()
+    # Price heartbeat removed to reduce Telegram noise
+    # You'll still get all important notifications:
+    # - Trade executions
+    # - Partial fills/unwinds  
+    # - Risk events
+    # - Hourly summaries
+    # - Session summaries
 
     async def _log_market_conditions(self):
         """Log current market conditions for debugging."""
