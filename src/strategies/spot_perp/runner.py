@@ -150,39 +150,49 @@ class SpotPerpRunner:
             await self.telegram.send_message("▶️ Trading resumed")
 
     async def get_status(self) -> Dict[str, Any]:
-        """Get current strategy status."""
+        """Get current status of the strategy."""
         try:
-            # Get exchange health
-            spot_health = "Healthy" if self.spot_exchange and self.spot_exchange.is_connected() else "Disconnected"
-            perp_health = "Healthy" if self.perp_exchange and self.perp_exchange.is_connected() else "Disconnected"
+            # Get current prices
+            spot_price = None
+            perp_price = None
+            spread_bps = 0.0
             
-            # Calculate book freshness
-            current_time = int(time.time() * 1000)
-            book_freshness_ms = min(
-                current_time - self.state.last_opportunity_check,
-                current_time - self.state.last_trade_time
-            ) if self.state.last_opportunity_check > 0 else 0
+            if hasattr(self, 'spot_quotes') and self.spot_quotes:
+                spot_quote = self.spot_quotes[0]
+                spot_price = (spot_quote.bid + spot_quote.ask) / 2
+                
+            if hasattr(self, 'perp_quotes') and self.perp_quotes:
+                perp_quote = self.perp_quotes[0]
+                perp_price = (perp_quote.bid + perp_quote.ask) / 2
+                
+            if spot_price and perp_price:
+                spread_bps = abs(perp_price - spot_price) / spot_price * 10000
             
-            # Get active routes
-            active_routes = []
-            if hasattr(self.config, 'routes'):
-                for route in self.config.routes:
-                    if route.get('enabled', False):
-                        active_routes.append(f"{route['name']}: {route['left']['ex']} ↔ {route['right']['ex']}")
+            # Get trade statistics
+            total_trades = getattr(self.state, 'total_trades', 0)
+            total_pnl = getattr(self.state, 'total_pnl', 0.0)
             
-            status_data = {
-                'active_routes': '\n'.join(active_routes) if active_routes else 'None',
-                'spot_health': spot_health,
-                'perp_health': perp_health,
-                'book_freshness_ms': book_freshness_ms,
-                'guards_status': self._get_guards_status()
+            return {
+                'name': f"{self.spot_symbol} ↔ {self.perp_symbol}",
+                'status': '🟢 Active' if self.state.is_running and not self.state.is_paused else '🔴 Inactive',
+                'spot_price': f"${spot_price:.4f}" if spot_price else "N/A",
+                'perp_price': f"${perp_price:.4f}" if perp_price else "N/A",
+                'spread_bps': f"{spread_bps:.1f} bps",
+                'min_edge_bps': self.config.detector.min_edge_bps,
+                'total_trades': total_trades,
+                'total_pnl': total_pnl,
+                'is_running': self.state.is_running,
+                'is_paused': self.state.is_paused,
+                'last_opportunity_check': getattr(self.state, 'last_opportunity_check', 0)
             }
             
-            return status_data
-            
         except Exception as e:
-            logger.error(f"Error getting status: {e}")
-            return {}
+            logger.error(f"Error getting strategy status: {e}")
+            return {
+                'name': f"{self.spot_symbol} ↔ {self.perp_symbol}",
+                'status': f'❌ Error: {e}',
+                'error': str(e)
+            }
 
     async def _initialize_exchanges(self):
         """Initialize exchange connections with retry logic."""

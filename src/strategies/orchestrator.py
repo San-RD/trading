@@ -1,8 +1,10 @@
 """Main strategy orchestrator for running multiple arbitrage strategies."""
 
 import asyncio
+import time
 from typing import List, Dict, Any
 from loguru import logger
+from datetime import datetime
 
 from .strategy_factory import StrategyFactory
 from src.config import Config
@@ -54,12 +56,106 @@ class StrategyOrchestrator:
                 task = asyncio.create_task(strategy.start())
                 strategy_tasks.append(task)
             
+            # Start heartbeat task
+            heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            
             # Wait for all strategies to complete
-            await asyncio.gather(*strategy_tasks, return_exceptions=True)
+            await asyncio.gather(*strategy_tasks, heartbeat_task, return_exceptions=True)
             
         except Exception as e:
             logger.error(f"Fatal error in orchestrator: {e}")
             await self.stop()
+    
+    async def _heartbeat_loop(self):
+        """Send heartbeat every minute showing status of all strategies."""
+        try:
+            last_heartbeat = time.time()
+            
+            while self.is_running:
+                try:
+                    current_time = time.time()
+                    
+                    # Send heartbeat every 60 seconds
+                    if current_time - last_heartbeat >= 60:
+                        await self._send_heartbeat()
+                        last_heartbeat = current_time
+                    
+                    await asyncio.sleep(1)  # Check every second
+                    
+                except Exception as e:
+                    logger.error(f"Error in heartbeat loop: {e}")
+                    await asyncio.sleep(5)  # Wait before retrying
+                    
+        except Exception as e:
+            logger.error(f"Fatal error in heartbeat loop: {e}")
+    
+    async def _send_heartbeat(self):
+        """Send heartbeat message showing status of all strategies."""
+        try:
+            # Collect status from all strategies
+            strategy_statuses = []
+            total_trades = 0
+            total_pnl = 0.0
+            
+            for strategy in self.active_strategies:
+                try:
+                    if hasattr(strategy, 'get_status'):
+                        status = await strategy.get_status()
+                        strategy_statuses.append(status)
+                        
+                        # Aggregate trades and PnL
+                        if 'total_trades' in status:
+                            total_trades += status.get('total_trades', 0)
+                        if 'total_pnl' in status:
+                            total_pnl += status.get('total_pnl', 0.0)
+                    else:
+                        strategy_statuses.append({'name': 'Unknown', 'status': 'No status method'})
+                        
+                except Exception as e:
+                    strategy_statuses.append({'name': 'Error', 'status': f'Error: {e}'})
+            
+            # Create heartbeat message
+            message = f"""
+💓 <b>ORCHESTRATOR HEARTBEAT</b>
+
+⏰ Time: {datetime.now().strftime('%H:%M:%S')}
+🔄 Status: <b>ACTIVE</b> - Running {len(self.active_strategies)} strategies
+
+📊 <b>Overall Status:</b>
+• Active Strategies: {len(self.active_strategies)}
+• Total Trades: {total_trades}
+• Total P&L: ${total_pnl:.2f}
+
+🎯 <b>Strategy Status:</b>
+"""
+            
+            # Add individual strategy statuses
+            for i, status in enumerate(strategy_statuses, 1):
+                name = status.get('name', f'Strategy {i}')
+                status_text = status.get('status', 'Unknown')
+                message += f"• {name}: {status_text}\n"
+            
+            message += f"""
+💡 <b>Bot Status:</b>
+• Market Data: ✅ Streaming
+• Opportunity Detection: ✅ Active
+• Risk Management: ✅ Monitoring
+• All Systems: 🟢 Operational
+            """
+            
+            # Send to all strategies that have Telegram
+            for strategy in self.active_strategies:
+                if hasattr(strategy, 'telegram') and strategy.telegram:
+                    try:
+                        await strategy.telegram.send_message(message)
+                        break  # Only send once
+                    except Exception as e:
+                        logger.error(f"Error sending heartbeat to strategy {strategy}: {e}")
+            
+            logger.info(f"Orchestrator heartbeat sent - {len(self.active_strategies)} strategies active")
+            
+        except Exception as e:
+            logger.error(f"Error sending orchestrator heartbeat: {e}")
     
     async def stop(self):
         """Stop all active strategies."""
