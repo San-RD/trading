@@ -225,29 +225,38 @@ class SpotPerpRunner:
                     else:
                         raise Exception(f"Failed to connect to Binance after {max_retries} attempts: {e}")
             
-            # Initialize Hyperliquid (perp) - support both ETH and BTC
-            logger.info("🔌 Connecting to Hyperliquid perp exchange...")
-            self.perp_exchange = HyperliquidExchange("hyperliquid", self.config.dict())
-            
-            # Add retry logic for Hyperliquid connection
-            for attempt in range(max_retries):
+            # Initialize Hyperliquid perp exchange
+            try:
+                logger.info("🔌 Connecting to Hyperliquid perp exchange...")
+                self.perp_exchange = HyperliquidExchange("hyperliquid", self.config.dict())
+                
+                # Connect to Hyperliquid
+                if not await self.perp_exchange.connect([self.perp_symbol]):
+                    raise Exception("Failed to connect to Hyperliquid")
+                
+                # Start subscriptions after connection is stable
+                logger.info("🚀 Starting Hyperliquid market data subscriptions...")
                 try:
-                    connected = await self.perp_exchange.connect([self.perp_symbol])
-                    if connected:
-                        logger.info(f"✅ Hyperliquid perp exchange connected ({self.perp_symbol})")
-                        break
-                    else:
-                        if attempt < max_retries - 1:
-                            logger.warning(f"⚠️  Hyperliquid connection attempt {attempt + 1} failed, retrying in {retry_delay}s...")
-                            await asyncio.sleep(retry_delay)
-                        else:
-                            raise Exception("Failed to connect to Hyperliquid after all retries")
+                    subscription_result = await self.perp_exchange.start_subscriptions()
+                    if not subscription_result:
+                        raise Exception("Failed to start Hyperliquid subscriptions")
+                    logger.info("✅ Hyperliquid subscriptions started successfully")
+                    
+                    # Wait for subscriptions to stabilize before proceeding
+                    logger.info("⏳ Waiting for subscriptions to stabilize...")
+                    await asyncio.sleep(2.0)  # Give WebSocket time to process subscriptions
+                    logger.info("✅ Subscriptions should be stable now")
+                    
                 except Exception as e:
-                    if attempt < max_retries - 1:
-                        logger.warning(f"⚠️  Hyperliquid connection error (attempt {attempt + 1}): {e}, retrying in {retry_delay}s...")
-                        await asyncio.sleep(retry_delay)
-                    else:
-                        raise Exception(f"Failed to connect to Hyperliquid after {max_retries} attempts: {e}")
+                    logger.error(f"❌ CRITICAL ERROR starting subscriptions: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise Exception(f"Failed to start Hyperliquid subscriptions: {e}")
+                
+                logger.info(f"✅ Hyperliquid perp exchange connected ({self.perp_symbol})")
+            except Exception as e:
+                logger.error(f"Failed to connect to Hyperliquid: {e}")
+                raise
             
         except Exception as e:
             logger.error(f"Error initializing exchanges: {e}")
@@ -256,6 +265,10 @@ class SpotPerpRunner:
     async def _start_market_data_streams(self):
         """Start market data streams for both exchanges."""
         try:
+            # Fetch initial quotes from REST API as fallback
+            logger.info("Fetching initial quotes from REST API...")
+            await self.perp_exchange.fetch_initial_quotes([self.perp_symbol])
+            
             # Start spot quote stream
             asyncio.create_task(self._stream_spot_quotes())
             
@@ -271,30 +284,67 @@ class SpotPerpRunner:
     async def _stream_spot_quotes(self):
         """Stream spot quotes from Binance."""
         try:
+            logger.info(f"🔄 Starting spot quote stream for {self.spot_symbol}")
+            logger.info(f"Spot exchange connected: {self.spot_exchange.is_connected()}")
+            
             async for quote in self.spot_exchange.watch_quotes([self.spot_symbol]):
-                # Store quotes by symbol
-                if not hasattr(self, 'spot_quotes_by_symbol'):
-                    self.spot_quotes_by_symbol = {}
-                self.spot_quotes_by_symbol[quote.symbol] = quote
-                self.spot_quotes = list(self.spot_quotes_by_symbol.values())
-                self.state.last_opportunity_check = int(time.time() * 1000)
+                                        # Store quotes by symbol
+                        if not hasattr(self, 'spot_quotes_by_symbol'):
+                            self.spot_quotes_by_symbol = {}
+                            logger.info(f"📊 First spot quote: {quote.symbol} bid=${quote.bid:.4f} ask=${quote.ask:.4f}")
+                        
+                        # Check if price changed significantly (>0.1%)
+                        old_quote = self.spot_quotes_by_symbol.get(quote.symbol)
+                        if old_quote:
+                            old_mid = (old_quote.bid + old_quote.ask) / 2
+                            new_mid = (quote.bid + quote.ask) / 2
+                            price_change_pct = abs(new_mid - old_mid) / old_mid * 100
+                            if price_change_pct > 0.1:  # Only log if >0.1% change
+                                logger.info(f"📊 Spot price update: {quote.symbol} ${old_mid:.4f} → ${new_mid:.4f} ({price_change_pct:+.2f}%)")
+                        
+                        self.spot_quotes_by_symbol[quote.symbol] = quote
+                        self.spot_quotes = list(self.spot_quotes_by_symbol.values())
+                        self.state.last_opportunity_check = int(time.time() * 1000)
                 
         except Exception as e:
             logger.error(f"Error in spot quote stream: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def _stream_perp_quotes(self):
         """Stream perp quotes from Hyperliquid."""
         try:
+            logger.info(f"🔄 Starting perp quote stream for {self.perp_symbol}")
+            logger.info(f"Perp exchange connected: {self.perp_exchange.is_connected()}")
+            
+            # Add debugging to see if we reach watch_quotes
+            logger.info(f"🔍 About to call watch_quotes on perp_exchange...")
+            logger.info(f"🔍 perp_exchange type: {type(self.perp_exchange)}")
+            logger.info(f"🔍 perp_exchange methods: {[method for method in dir(self.perp_exchange) if not method.startswith('_')]}")
+            
             async for quote in self.perp_exchange.watch_quotes([self.perp_symbol]):
-                # Store quotes by symbol
-                if not hasattr(self, 'perp_quotes_by_symbol'):
-                    self.perp_quotes_by_symbol = {}
-                self.perp_quotes_by_symbol[quote.symbol] = quote
-                self.perp_quotes = list(self.perp_quotes_by_symbol.values())
-                self.state.last_opportunity_check = int(time.time() * 1000)
+                                        # Store quotes by symbol
+                        if not hasattr(self, 'perp_quotes_by_symbol'):
+                            self.perp_quotes_by_symbol = {}
+                            logger.info(f"📊 First perp quote: {quote.symbol} bid=${quote.bid:.4f} ask=${quote.ask:.4f}")
+                        
+                        # Check if price changed significantly (>0.1%)
+                        old_quote = self.perp_quotes_by_symbol.get(quote.symbol)
+                        if old_quote:
+                            old_mid = (old_quote.bid + old_quote.ask) / 2
+                            new_mid = (quote.bid + quote.ask) / 2
+                            price_change_pct = abs(new_mid - old_mid) / old_mid * 100
+                            if price_change_pct > 0.1:  # Only log if >0.1% change
+                                logger.info(f"📊 Perp price update: {quote.symbol} ${old_mid:.4f} → ${new_mid:.4f} ({price_change_pct:+.2f}%)")
+                        
+                        self.perp_quotes_by_symbol[quote.symbol] = quote
+                        self.perp_quotes = list(self.perp_quotes_by_symbol.values())
+                        self.state.last_opportunity_check = int(time.time() * 1000)
                 
         except Exception as e:
-            logger.error(f"Error in perp quote stream: {e}")
+            logger.error(f"❌ Error in perp quote stream: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def _main_loop(self):
         """Main event loop for the strategy."""
@@ -307,14 +357,14 @@ class SpotPerpRunner:
                 try:
                     current_time = time.time()
                     
-                    # Check for opportunities (every 100ms)
-                    if current_time - last_heartbeat >= 0.1:
+                    # Check for opportunities (every 500ms - reduced frequency)
+                    if current_time - last_heartbeat >= 0.5:
                         if not self.state.is_paused:
                             await self._check_opportunities()
                         last_heartbeat = current_time
                     
-                    # Send price heartbeat every 1 minute
-                    if current_time - last_price_heartbeat >= 60:  # Every 60 seconds
+                    # Send price heartbeat every 30 seconds
+                    if current_time - last_price_heartbeat >= 30:  # Every 30 seconds
                         await self._send_price_heartbeat()
                         last_price_heartbeat = current_time
                     
@@ -349,6 +399,7 @@ class SpotPerpRunner:
         """Send price heartbeat to show bot is working and monitoring prices."""
         try:
             if not self.telegram:
+                logger.warning("No Telegram notifier available for heartbeat")
                 return
                 
             # Get current prices from both exchanges
@@ -361,6 +412,9 @@ class SpotPerpRunner:
                 spot_price = (spot_quote.bid + spot_quote.ask) / 2
                 spot_bid = spot_quote.bid
                 spot_ask = spot_quote.ask
+            else:
+                logger.warning("No spot quotes available")
+                return
             
             # Get perp price from Hyperliquid
             if hasattr(self, 'perp_quotes') and self.perp_quotes:
@@ -368,6 +422,9 @@ class SpotPerpRunner:
                 perp_price = (perp_quote.bid + perp_quote.ask) / 2
                 perp_bid = perp_quote.bid
                 perp_ask = perp_quote.ask
+            else:
+                logger.warning("No perp quotes available")
+                return
             
             if spot_price and perp_price:
                 # Calculate spread
@@ -397,9 +454,30 @@ class SpotPerpRunner:
                 
                 await self.telegram.send_message(message)
                 logger.info(f"Price heartbeat sent - Spot: ${spot_price:.4f}, Perp: ${perp_price:.4f}, Spread: {spread_bps:.1f} bps")
+            else:
+                # Send a simple status heartbeat even without prices
+                message = f"""
+💓 <b>STATUS HEARTBEAT - {self.spot_symbol} ↔ {self.perp_symbol}</b>
+
+⏰ Time: {datetime.now().strftime('%H:%M:%S')}
+🔄 Status: <b>ACTIVE</b> - Waiting for market data
+
+📊 <b>Current Status:</b>
+• Bot: ✅ Running
+• Market Data: ⏳ Initializing
+• Opportunity Detection: ✅ Active
+• Risk Management: ✅ Monitoring
+
+💡 <b>Note:</b> Waiting for first price quotes from exchanges...
+                """
+                
+                await self.telegram.send_message(message)
+                logger.info("Status heartbeat sent (waiting for price data)")
             
         except Exception as e:
             logger.error(f"Error sending price heartbeat: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def _check_opportunities(self):
         """Check for arbitrage opportunities."""

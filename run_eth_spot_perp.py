@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ETH Spot↔Perp Arbitrage Strategy Runner
+heartETH Spot↔Perp Arbitrage Strategy Runner
 Runs the ETH/USDC spot↔perp strategy between Binance and Hyperliquid.
 """
 

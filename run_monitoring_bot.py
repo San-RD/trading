@@ -1330,63 +1330,12 @@ class UnifiedMonitoringBot:
             await self.application.start()
             await self.application.updater.start_polling()
             
-            # Start heartbeat task
-            asyncio.create_task(self._heartbeat_loop())
-            
             self.logger.info("✅ Monitoring bot started successfully")
             
         except Exception as e:
             self.logger.error(f"Failed to start monitoring bot: {e}")
             raise
 
-    async def _heartbeat_loop(self):
-        """Send heartbeat every minute to show bot is working."""
-        try:
-            while True:
-                try:
-                    # Send heartbeat message
-                    message = f"""
-💓 <b>MONITORING BOT HEARTBEAT</b>
-
-⏰ Time: {datetime.now().strftime('%H:%M:%S')}
-🔄 Status: <b>ACTIVE</b> - 24/7 Market Intelligence
-
-📊 <b>Monitoring Services:</b>
-• Whale Movements: ✅ Active
-• Volume Spikes: ✅ Active
-• Price Alerts: ✅ Active
-• Market Intelligence: ✅ Active
-• Exchange Monitoring: ✅ Active
-
-🎯 <b>Coverage:</b>
-• Binance: Spot markets
-• Kraken: Spot markets  
-• Hyperliquid: Perpetual futures
-• Market flows & patterns
-• Large transfers & trades
-
-💡 <b>Bot Status:</b>
-• All Systems: 🟢 Operational
-• Data Freshness: ✅ Real-time
-• Alert System: ✅ Active
-                    """
-                    
-                    # Send to all registered chats
-                    if hasattr(self, 'config') and hasattr(self.config, 'alerts'):
-                        chat_id = self.config.alerts.telegram_chat_id
-                        if chat_id:
-                            await self.send_message(chat_id, message)
-                    
-                    # Wait 60 seconds before next heartbeat
-                    await asyncio.sleep(60)
-                    
-                except Exception as e:
-                    self.logger.error(f"Error in heartbeat loop: {e}")
-                    await asyncio.sleep(30)  # Wait before retrying
-                    
-        except Exception as e:
-            self.logger.error(f"Fatal error in heartbeat loop: {e}")
-    
     async def stop(self):
         """Stop the monitoring bot."""
         if self.application:
