@@ -37,7 +37,7 @@ async def main():
         print("=" * 60)
         print("📊 Running ALL enabled strategies simultaneously:")
         for route in enabled_routes:
-            print(f"   • {route.left.symbol}: {route.left.ex} {route.left.type} ↔ {route.right.ex} {route.right.type}")
+            print(f"   • {route.left['symbol']}: {route.left['ex']} {route.left['type']} ↔ {route.right['ex']} {route.right['type']}")
         print("=" * 60)
         
         # Create and start strategies for each route
