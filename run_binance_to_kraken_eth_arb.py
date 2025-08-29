@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 """
-Live CEX<->CEX Arbitrage Bot Runner
-Dynamically configured from config.yaml
-
-WARNING: This will use REAL MONEY!
-
-Usage: 
-  python run_live_cex_arbitrage.py [--yes]     # Start live trading
-  python run_live_cex_arbitrage.py --show-config  # Show current configuration
+Binance to Kraken ETH Arbitrage Bot
+Original spot↔spot arbitrage strategy between Binance and Kraken.
 """
 
 import asyncio
-import signal
+import logging
+import os
 import sys
 import time
-import os
-from datetime import datetime
-from loguru import logger
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded environment variables from .env file")
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+except Exception as e:
+    print(f"⚠️  Error loading .env file: {e}")
+
+# Add src to path
+sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.main import CrossExchangeArbBot
 from src.config import Config

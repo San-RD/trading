@@ -14,6 +14,16 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from collections import defaultdict, deque
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded environment variables from .env file")
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+except Exception as e:
+    print(f"⚠️  Error loading .env file: {e}")
+
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
@@ -49,7 +59,7 @@ class MarketIntelligenceTracker:
         # Add some sample data for immediate response
         self._add_sample_data()
         
-        # Smart pair filtering - focused on 10 key trading pairs
+        # Smart pair filtering - focused on key trading pairs
         self.tracked_pairs = {
             'binance': [
                 'BTCUSDC', 'ETHUSDC', 'XRPUSDC', 'BNBUSDC', 'SOLUSDC',
@@ -58,14 +68,18 @@ class MarketIntelligenceTracker:
             'kraken': [
                 'XBTUSDC', 'ETHUSDC', 'XRPUSDC', 'BNBUSDC', 'SOLUSDC',
                 'DOGEUSDC', 'TRXUSDT', 'ADAUSDC', 'LINKUSDC', 'HYPEUSDC'
+            ],
+            'hyperliquid': [
+                'BTC-PERP', 'ETH-PERP', 'SOL-PERP', 'BNB-PERP', 'DOGE-PERP'
             ]
         }
         
         # API endpoints (you can add your own)
         self.binance_api = "https://api.binance.com/api/v3"
         self.kraken_api = "https://api.kraken.com/0/public"
+        self.hyperliquid_api = "https://api.hyperliquid.xyz"
         
-        self.logger.info(f"Market intelligence tracker initialized - tracking {len(self.tracked_pairs['binance'])} Binance pairs and {len(self.tracked_pairs['kraken'])} Kraken pairs")
+        self.logger.info(f"Market intelligence tracker initialized - tracking {len(self.tracked_pairs['binance'])} Binance pairs, {len(self.tracked_pairs['kraken'])} Kraken pairs, and {len(self.tracked_pairs['hyperliquid'])} Hyperliquid perps")
     
     def _add_sample_data(self):
         """Add sample data for immediate response."""
@@ -115,8 +129,21 @@ class MarketIntelligenceTracker:
             }
             self.exchange_flows.append(sample_price)
             
+            # Sample Hyperliquid perp funding rate change
+            sample_funding = {
+                'type': 'funding_rate_change',
+                'exchange': 'Hyperliquid',
+                'symbol': 'ETH-PERP',
+                'funding_rate_bps': 25,
+                'previous_rate_bps': -15,
+                'change_bps': 40,
+                'timestamp': datetime.now(),
+                'alert_type': 'perp_signal'
+            }
+            self.exchange_flows.append(sample_funding)
+            
             # Add to whale movements
-            self.whale_movements.extend([sample_imbalance, sample_trade, sample_price])
+            self.whale_movements.extend([sample_imbalance, sample_trade, sample_price, sample_funding])
             
             self.logger.info("Sample data added for immediate response")
             
@@ -161,6 +188,11 @@ class MarketIntelligenceTracker:
             kraken_spikes = await self._check_kraken_volume()
             if kraken_spikes:
                 volume_spikes.extend(kraken_spikes)
+            
+            # Check Hyperliquid volume
+            hyperliquid_spikes = await self._check_hyperliquid_volume()
+            if hyperliquid_spikes:
+                volume_spikes.extend(hyperliquid_spikes)
             
             return {
                 'volume_spikes': volume_spikes,
@@ -287,6 +319,77 @@ class MarketIntelligenceTracker:
         
         return []
     
+    async def _check_hyperliquid_volume(self) -> List[Dict[str, Any]]:
+        """Check Hyperliquid volume for spikes."""
+        try:
+            # Get 24hr ticker for major perps
+            response = requests.post(f"{self.hyperliquid_api}/info", json={"type": "meta"})
+            if response.status_code == 200:
+                data = response.json()
+                spikes = []
+                
+                if 'universe' in data:
+                    for coin_info in data['universe']:
+                        symbol = coin_info.get('name', '')
+                        if not symbol:
+                            continue
+                            
+                        # Convert to our format (e.g., "ETH" -> "ETH-PERP")
+                        perp_symbol = f"{symbol}-PERP"
+                        
+                        # Only process tracked pairs
+                        if perp_symbol not in self.tracked_pairs['hyperliquid']:
+                            continue
+                        
+                        # Get 24hr stats for this coin
+                        stats_response = requests.post(
+                            f"{self.hyperliquid_api}/info", 
+                            json={"type": "24h", "coin": symbol}
+                        )
+                        
+                        if stats_response.status_code == 200:
+                            stats_data = stats_response.json()
+                            
+                            if '24h' in stats_data:
+                                volume_24h = float(stats_data['24h'].get('volUsd', 0))
+                                price_change_pct = float(stats_data['24h'].get('priceChange', 0))
+                                
+                                # Calculate baseline
+                                baseline = self.volume_baselines.get(perp_symbol, volume_24h)
+                                
+                                # Update baseline
+                                self.volume_baselines[perp_symbol] = (baseline * 0.9) + (volume_24h * 0.1)
+                                
+                                # Check for spike
+                                if baseline > 0 and volume_24h > (baseline * self.volume_spike_threshold):
+                                    spike_info = {
+                                        'exchange': 'Hyperliquid',
+                                        'symbol': perp_symbol,
+                                        'current_volume': volume_24h,
+                                        'baseline_volume': baseline,
+                                        'spike_multiplier': volume_24h / baseline,
+                                        'price_change_pct': price_change_pct,
+                                        'timestamp': datetime.now(),
+                                        'alert_type': 'volume_spike'
+                                    }
+                                    spikes.append(spike_info)
+                                    
+                                    # Add to alerts
+                                    self.market_alerts.append({
+                                        'type': 'volume_spike',
+                                        'exchange': 'Hyperliquid',
+                                        'symbol': perp_symbol,
+                                        'message': f"🚀 Volume spike on Hyperliquid: {perp_symbol} - {spike_info['spike_multiplier']:.1f}x normal volume",
+                                        'timestamp': datetime.now()
+                                    })
+                
+                return spikes
+            
+        except Exception as e:
+            self.logger.error(f"Error checking Hyperliquid volume: {e}")
+        
+        return []
+    
     async def check_price_movements(self) -> List[Dict[str, Any]]:
         """Check for significant price movements using real exchange data."""
         try:
@@ -301,6 +404,11 @@ class MarketIntelligenceTracker:
             kraken_alerts = await self._check_kraken_prices()
             if kraken_alerts:
                 price_alerts.extend(kraken_alerts)
+            
+            # Check Hyperliquid prices
+            hyperliquid_alerts = await self._check_hyperliquid_prices()
+            if hyperliquid_alerts:
+                price_alerts.extend(hyperliquid_alerts)
             
             return price_alerts
             
@@ -411,6 +519,72 @@ class MarketIntelligenceTracker:
         
         return []
     
+    async def _check_hyperliquid_prices(self) -> List[Dict[str, Any]]:
+        """Check Hyperliquid for significant price changes."""
+        try:
+            # Get 24hr ticker for major perps
+            response = requests.post(f"{self.hyperliquid_api}/info", json={"type": "meta"})
+            if response.status_code == 200:
+                data = response.json()
+                alerts = []
+                
+                if 'universe' in data:
+                    for coin_info in data['universe']:
+                        symbol = coin_info.get('name', '')
+                        if not symbol:
+                            continue
+                            
+                        # Convert to our format (e.g., "ETH" -> "ETH-PERP")
+                        perp_symbol = f"{symbol}-PERP"
+                        
+                        # Only process tracked pairs
+                        if perp_symbol not in self.tracked_pairs['hyperliquid']:
+                            continue
+                        
+                        # Get 24hr stats for this coin
+                        stats_response = requests.post(
+                            f"{self.hyperliquid_api}/info", 
+                            json={"type": "24h", "coin": symbol}
+                        )
+                        
+                        if stats_response.status_code == 200:
+                            stats_data = stats_response.json()
+                            
+                            if '24h' in stats_data:
+                                price_change_pct = float(stats_data['24h'].get('priceChange', 0))
+                                current_price = float(stats_data['24h'].get('markPrice', 0))
+                                open_price = float(stats_data['24h'].get('openPrice', 0))
+                                
+                                # Check for significant price movement
+                                if abs(price_change_pct) > (self.price_change_threshold * 100):
+                                    alert_info = {
+                                        'exchange': 'Hyperliquid',
+                                        'symbol': perp_symbol,
+                                        'price_change_pct': price_change_pct,
+                                        'current_price': current_price,
+                                        'open_price': open_price,
+                                        'timestamp': datetime.now(),
+                                        'alert_type': 'price_movement'
+                                    }
+                                    alerts.append(alert_info)
+                                    
+                                    # Add to market alerts
+                                    direction = "📈" if price_change_pct > 0 else "📉"
+                                    self.market_alerts.append({
+                                        'type': 'price_movement',
+                                        'exchange': 'Hyperliquid',
+                                        'symbol': perp_symbol,
+                                        'message': f"{direction} Price alert on Hyperliquid: {perp_symbol} {price_change_pct:+.2f}% in 24h",
+                                        'timestamp': datetime.now()
+                                    })
+                
+                return alerts
+            
+        except Exception as e:
+            self.logger.error(f"Error checking Hyperliquid prices: {e}")
+        
+        return []
+    
     async def _detect_unusual_patterns(self) -> List[Dict[str, Any]]:
         """Detect unusual trading patterns."""
         try:
@@ -419,8 +593,9 @@ class MarketIntelligenceTracker:
             # Check for correlated volume spikes across exchanges
             binance_volumes = {k: v for k, v in self.volume_baselines.items() if 'binance' in k.lower()}
             kraken_volumes = {k: v for k, v in self.volume_baselines.items() if 'kraken' in k.lower()}
+            hyperliquid_volumes = {k: v for k, v in self.volume_baselines.items() if 'hyperliquid' in k.lower()}
             
-            # Look for unusual correlations
+            # Look for unusual correlations between spot exchanges
             for symbol in set(binance_volumes.keys()) & set(kraken_volumes.keys()):
                 binance_vol = binance_volumes.get(symbol, 0)
                 kraken_vol = kraken_volumes.get(symbol, 0)
@@ -437,6 +612,28 @@ class MarketIntelligenceTracker:
                             'timestamp': datetime.now()
                         })
             
+            # Look for spot vs perp correlations (Binance spot vs Hyperliquid perp)
+            for symbol in set(binance_volumes.keys()):
+                # Extract base symbol (e.g., "BTCUSDC" -> "BTC")
+                base_symbol = symbol.replace('USDC', '').replace('USDT', '')
+                perp_symbol = f"{base_symbol}-PERP"
+                
+                if perp_symbol in hyperliquid_volumes:
+                    spot_vol = binance_volumes.get(symbol, 0)
+                    perp_vol = hyperliquid_volumes.get(perp_symbol, 0)
+                    
+                    if spot_vol > 0 and perp_vol > 0:
+                        ratio = spot_vol / perp_vol
+                        if ratio > 10 or ratio < 0.1:  # Very unusual spot vs perp ratio
+                            patterns.append({
+                                'type': 'spot_perp_volume_ratio',
+                                'symbol': f"{symbol} vs {perp_symbol}",
+                                'spot_volume': spot_vol,
+                                'perp_volume': perp_vol,
+                                'ratio': ratio,
+                                'timestamp': datetime.now()
+                            })
+            
             return patterns
             
         except Exception as e:
@@ -452,6 +649,11 @@ class MarketIntelligenceTracker:
             # Start background detection (non-blocking)
             asyncio.create_task(self._background_whale_detection())
             
+            # Check Hyperliquid funding rates
+            funding_alerts = await self._check_hyperliquid_funding()
+            if funding_alerts:
+                sample_movements.extend(funding_alerts)
+            
             return {
                 'whale_movements': sample_movements,
                 'large_transfers': list(self.large_transfers),
@@ -465,6 +667,69 @@ class MarketIntelligenceTracker:
                 'large_transfers': list(self.large_transfers),
                 'exchange_flows': list(self.exchange_flows)
             }
+    
+    async def _check_hyperliquid_funding(self) -> List[Dict[str, Any]]:
+        """Check Hyperliquid for significant funding rate changes."""
+        try:
+            funding_alerts = []
+            
+            # Get funding rates for tracked pairs
+            for perp_symbol in self.tracked_pairs['hyperliquid']:
+                # Extract base symbol (e.g., "ETH-PERP" -> "ETH")
+                base_symbol = perp_symbol.replace('-PERP', '')
+                
+                # Get funding rate info
+                response = requests.post(
+                    f"{self.hyperliquid_api}/info",
+                    json={"type": "fundingHistory", "coin": base_symbol}
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if 'fundingHistory' in data and len(data['fundingHistory']) > 0:
+                        # Get current and previous funding rates
+                        current_funding = data['fundingHistory'][0]
+                        previous_funding = data['fundingHistory'][1] if len(data['fundingHistory']) > 1 else None
+                        
+                        if previous_funding:
+                            current_rate = float(current_funding.get('fundingRate', 0))
+                            previous_rate = float(previous_funding.get('fundingRate', 0))
+                            
+                            # Convert to basis points
+                            current_bps = current_rate * 10000
+                            previous_bps = previous_rate * 10000
+                            change_bps = current_bps - previous_bps
+                            
+                            # Alert on significant changes (>10 bps)
+                            if abs(change_bps) > 10:
+                                funding_info = {
+                                    'type': 'funding_rate_change',
+                                    'exchange': 'Hyperliquid',
+                                    'symbol': perp_symbol,
+                                    'current_rate_bps': current_bps,
+                                    'previous_rate_bps': previous_bps,
+                                    'change_bps': change_bps,
+                                    'timestamp': datetime.now(),
+                                    'alert_type': 'perp_signal'
+                                }
+                                funding_alerts.append(funding_info)
+                                
+                                # Add to market alerts
+                                direction = "📈" if change_bps > 0 else "📉"
+                                self.market_alerts.append({
+                                        'type': 'funding_rate_change',
+                                        'exchange': 'Hyperliquid',
+                                        'symbol': perp_symbol,
+                                        'message': f"{direction} Funding rate change on Hyperliquid: {perp_symbol} {change_bps:+.1f} bps",
+                                        'timestamp': datetime.now()
+                                    })
+            
+            return funding_alerts
+            
+        except Exception as e:
+            self.logger.error(f"Error checking Hyperliquid funding rates: {e}")
+            return []
     
     async def _background_whale_detection(self):
         """Background whale detection that doesn't block the response."""
@@ -527,6 +792,11 @@ class MarketIntelligenceTracker:
             kraken_trades = await self._check_kraken_large_trades()
             if kraken_trades:
                 large_trades.extend(kraken_trades)
+            
+            # Check Hyperliquid for large trades
+            hyperliquid_trades = await self._check_hyperliquid_large_trades()
+            if hyperliquid_trades:
+                large_trades.extend(hyperliquid_trades)
             
             return large_trades
             
@@ -647,6 +917,63 @@ class MarketIntelligenceTracker:
             self.logger.error(f"Error checking Kraken large trades: {e}")
             return []
     
+    async def _check_hyperliquid_large_trades(self) -> List[Dict[str, Any]]:
+        """Check Hyperliquid for large trades indicating whale activity."""
+        try:
+            large_trades = []
+            
+            # Get recent trades for tracked pairs
+            for perp_symbol in self.tracked_pairs['hyperliquid']:
+                # Extract base symbol (e.g., "ETH-PERP" -> "ETH")
+                base_symbol = perp_symbol.replace('-PERP', '')
+                
+                # Get recent trades from Hyperliquid
+                response = requests.post(
+                    f"{self.hyperliquid_api}/info",
+                    json={"type": "recentTrades", "coin": base_symbol}
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if 'recentTrades' in data:
+                        trades = data['recentTrades']
+                        
+                        for trade in trades:
+                            price = float(trade.get('price', 0))
+                            quantity = float(trade.get('size', 0))
+                            trade_value = price * quantity
+                            
+                            # Check if this is a large trade (>$100k)
+                            if trade_value > 100000:  # $100k threshold
+                                trade_info = {
+                                    'type': 'large_trade',
+                                    'exchange': 'Hyperliquid',
+                                    'symbol': perp_symbol,
+                                    'side': trade.get('side', 'UNKNOWN'),
+                                    'amount': quantity,
+                                    'price': price,
+                                    'value_usd': trade_value,
+                                    'timestamp': datetime.now(),
+                                    'alert_type': 'whale_movement'
+                                }
+                                large_trades.append(trade_info)
+                                
+                                # Add to market alerts
+                                self.market_alerts.append({
+                                    'type': 'whale_movement',
+                                    'exchange': 'Hyperliquid',
+                                    'symbol': perp_symbol,
+                                    'message': f"🐋 Large trade on Hyperliquid: {perp_symbol} {trade_info['side']} ${trade_value:,.0f}",
+                                    'timestamp': datetime.now()
+                                })
+            
+            return large_trades
+            
+        except Exception as e:
+            self.logger.error(f"Error checking Hyperliquid large trades: {e}")
+            return []
+    
     async def _check_whale_volume_patterns(self) -> List[Dict[str, Any]]:
         """Check for unusual volume patterns that suggest whale movements."""
         try:
@@ -763,6 +1090,59 @@ class MarketIntelligenceTracker:
                     self.logger.error(f"Error checking {symbol} order book: {e}")
                     continue
             
+            # Check Hyperliquid order books for perps
+            for perp_symbol in self.tracked_pairs['hyperliquid'][:3]:  # Top 3 perps
+                try:
+                    # Extract base symbol (e.g., "ETH-PERP" -> "ETH")
+                    base_symbol = perp_symbol.replace('-PERP', '')
+                    
+                    # Get order book from Hyperliquid
+                    response = requests.post(
+                        f"{self.hyperliquid_api}/info",
+                        json={"type": "orderBook", "coin": base_symbol}
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if 'orderBook' in data:
+                            orderbook = data['orderBook']
+                            
+                            # Check for large bid/ask walls
+                            total_bids = sum(float(level.get('sz', 0)) for level in orderbook.get('bids', [])[:5])
+                            total_asks = sum(float(level.get('sz', 0)) for level in orderbook.get('asks', [])[:5])
+                            
+                            # Lower threshold to $500k for more alerts
+                            if total_bids > 500000 or total_asks > 500000:
+                                flow_info = {
+                                    'type': 'order_book_imbalance',
+                                    'exchange': 'Hyperliquid',
+                                    'symbol': perp_symbol,
+                                    'bid_wall': total_bids,
+                                    'ask_wall': total_asks,
+                                    'imbalance': abs(total_bids - total_asks),
+                                    'timestamp': datetime.now(),
+                                    'alert_type': 'exchange_flow'
+                                }
+                                flows.append(flow_info)
+                                
+                                # Add to market alerts
+                                direction = "BUY" if total_bids > total_asks else "SELL"
+                                self.market_alerts.append({
+                                    'type': 'exchange_flow',
+                                    'exchange': 'Hyperliquid',
+                                    'symbol': perp_symbol,
+                                    'message': f"🏗️ Large {direction} wall on Hyperliquid: {perp_symbol} - ${flow_info['imbalance']:,.0f} imbalance",
+                                    'timestamp': datetime.now()
+                                })
+                    
+                    # Small delay between requests to avoid rate limiting
+                    await asyncio.sleep(0.1)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error checking {perp_symbol} order book: {e}")
+                    continue
+            
             return flows
             
         except Exception as e:
@@ -806,6 +1186,54 @@ class MarketIntelligenceTracker:
                             'message': f"{emoji} Whale activity on Binance: {symbol} {price_change:+.2f}% with ${volume_change:,.0f} volume",
                             'timestamp': datetime.now()
                         })
+            
+            # Check Hyperliquid for sudden price movements
+            for perp_symbol in self.tracked_pairs['hyperliquid']:
+                try:
+                    # Extract base symbol (e.g., "ETH-PERP" -> "ETH")
+                    base_symbol = perp_symbol.replace('-PERP', '')
+                    
+                    # Get 24hr stats from Hyperliquid
+                    response = requests.post(
+                        f"{self.hyperliquid_api}/info",
+                        json={"type": "24h", "coin": base_symbol}
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if '24h' in data:
+                            stats = data['24h']
+                            price_change = float(stats.get('priceChange', 0))
+                            volume_24h = float(stats.get('volUsd', 0))
+                            
+                            # If price moves >2% with high volume, it might be whale activity
+                            if abs(price_change) > 2.0 and volume_24h > 1000000:  # 2% move, >$1M volume
+                                flow_info = {
+                                    'type': 'price_movement_flow',
+                                    'exchange': 'Hyperliquid',
+                                    'symbol': perp_symbol,
+                                    'price_change_pct': price_change,
+                                    'volume': volume_24h,
+                                    'direction': 'UP' if price_change > 0 else 'DOWN',
+                                    'timestamp': datetime.now(),
+                                    'alert_type': 'exchange_flow'
+                                }
+                                flows.append(flow_info)
+                                
+                                # Add to market alerts
+                                emoji = "📈" if price_change > 0 else "📉"
+                                self.market_alerts.append({
+                                    'type': 'exchange_flow',
+                                    'exchange': 'Hyperliquid',
+                                    'symbol': perp_symbol,
+                                    'message': f"{emoji} Whale activity on Hyperliquid: {perp_symbol} {price_change:+.2f}% with ${volume_24h:,.0f} volume",
+                                    'timestamp': datetime.now()
+                                })
+                
+                except Exception as e:
+                    self.logger.error(f"Error checking {perp_symbol} price flow: {e}")
+                    continue
             
             return flows
             

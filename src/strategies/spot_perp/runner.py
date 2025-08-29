@@ -185,19 +185,58 @@ class SpotPerpRunner:
             return {}
 
     async def _initialize_exchanges(self):
-        """Initialize exchange connections."""
+        """Initialize exchange connections with retry logic."""
         try:
             # Initialize Binance (spot) - support both ETH and BTC
             logger.info("🔌 Connecting to Binance spot exchange...")
             self.spot_exchange = BinanceExchange("binance", self.config.dict())
-            await self.spot_exchange.connect([self.spot_symbol])
-            logger.info(f"✅ Binance spot exchange connected ({self.spot_symbol})")
+            
+            # Add retry logic for Binance connection
+            max_retries = 3
+            retry_delay = 2  # seconds
+            
+            for attempt in range(max_retries):
+                try:
+                    connected = await self.spot_exchange.connect([self.spot_symbol])
+                    if connected:
+                        logger.info(f"✅ Binance spot exchange connected ({self.spot_symbol})")
+                        break
+                    else:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"⚠️  Binance connection attempt {attempt + 1} failed, retrying in {retry_delay}s...")
+                            await asyncio.sleep(retry_delay)
+                        else:
+                            raise Exception("Failed to connect to Binance after all retries")
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"⚠️  Binance connection error (attempt {attempt + 1}): {e}, retrying in {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        raise Exception(f"Failed to connect to Binance after {max_retries} attempts: {e}")
             
             # Initialize Hyperliquid (perp) - support both ETH and BTC
             logger.info("🔌 Connecting to Hyperliquid perp exchange...")
             self.perp_exchange = HyperliquidExchange("hyperliquid", self.config.dict())
-            await self.perp_exchange.connect([self.perp_symbol])
-            logger.info(f"✅ Hyperliquid perp exchange connected ({self.perp_symbol})")
+            
+            # Add retry logic for Hyperliquid connection
+            for attempt in range(max_retries):
+                try:
+                    connected = await self.perp_exchange.connect([self.perp_symbol])
+                    if connected:
+                        logger.info(f"✅ Hyperliquid perp exchange connected ({self.perp_symbol})")
+                        break
+                    else:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"⚠️  Hyperliquid connection attempt {attempt + 1} failed, retrying in {retry_delay}s...")
+                            await asyncio.sleep(retry_delay)
+                        else:
+                            raise Exception("Failed to connect to Hyperliquid after all retries")
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"⚠️  Hyperliquid connection error (attempt {attempt + 1}): {e}, retrying in {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        raise Exception(f"Failed to connect to Hyperliquid after {max_retries} attempts: {e}")
             
         except Exception as e:
             logger.error(f"Error initializing exchanges: {e}")

@@ -1,22 +1,27 @@
+
 #!/usr/bin/env python3
 """
-Multi-Strategy Arbitrage Bot Orchestrator
-
-This script runs ALL enabled strategies simultaneously:
-- ETH/USDC: Binance spot ↔ Hyperliquid perp
-- BTC/USDC: Binance spot ↔ Hyperliquid perp
-
-For single strategies, use:
-- run_eth_spot_perp.py    # ETH/USDC only
-- run_btc_spot_perp.py    # BTC/USDC only
+Main Arbitrage Bot Runner
+Runs multiple arbitrage strategies in parallel based on configuration.
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded environment variables from .env file")
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+except Exception as e:
+    print(f"⚠️  Error loading .env file: {e}")
+
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.append(str(Path(__file__).parent / "src"))
 
 async def main():
     """Main entry point for the multi-strategy arbitrage bot."""

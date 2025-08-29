@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """
-BTC Spot↔Perp Arbitrage Strategy
-
-This script runs ONLY the BTC/USDC spot↔perp strategy:
-- Binance BTC/USDC spot ↔ Hyperliquid BTC-PERP perpetual
+BTC Spot↔Perp Arbitrage Strategy Runner
+Runs the BTC/USDC spot↔perp strategy between Binance and Hyperliquid.
 """
 
 import asyncio
+import logging
 import sys
 import os
 from pathlib import Path
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded environment variables from .env file")
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+except Exception as e:
+    print(f"⚠️  Error loading .env file: {e}")
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))

@@ -172,7 +172,7 @@ class StorageConfig(BaseModel):
 class LoggingConfig(BaseModel):
     """Logging configuration."""
     level: str = "INFO"
-    json: bool = True
+    json_logging: bool = True  # Renamed from 'json' to avoid Pydantic conflict
     log_trades: bool = True
     log_quotes: bool = False
     log_execution_details: bool = True
@@ -240,7 +240,9 @@ class Config(BaseModel):
         # Substitute environment variables
         config_str = yaml.dump(config_data)
         for key, value in os.environ.items():
-            config_str = config_str.replace(f"${{{key}}}", value)
+            # Always quote environment variable values to prevent type conversion
+            # This ensures hex addresses, API keys, etc. stay as strings
+            config_str = config_str.replace(f"${{{key}}}", f'"{value}"')
 
         config_data = yaml.safe_load(config_str)
         return cls(**config_data)
