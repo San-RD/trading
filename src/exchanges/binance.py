@@ -6,7 +6,7 @@ import logging
 from typing import Dict, List, Optional, Any, AsyncGenerator
 from decimal import Decimal
 
-import ccxt.pro as ccxt
+import ccxt.async_support as ccxt
 
 from .base import BaseExchange, Quote, OrderBook, Balance, OrderResult
 
@@ -71,29 +71,47 @@ class BinanceExchange(BaseExchange):
             assert not getattr(self.rest_public, "apiKey", None), "Public REST has apiKey!"
             assert not getattr(self.ws_public, "apiKey", None), "Public WS has apiKey!"
 
-            # 3) Load markets on public clients only
-            await self.rest_public.load_markets()
-            await self.ws_public.load_markets()
+            # 3) Load markets on public clients only (only for required symbols)
+            logger.info(f"Loading markets for symbols: {symbols}")
             
-            # 4) Load markets on private client for order placement
-            await self.rest_private.load_markets()
+            # Load markets efficiently - only load what we need
+            try:
+                # Load all markets but filter to only what we need
+                await self.rest_public.load_markets()
+                await self.ws_public.load_markets()
+                await self.rest_private.load_markets()
+                
+                # Filter markets to only include our symbols
+                if hasattr(self.rest_public, 'markets') and self.rest_public.markets:
+                    filtered_markets = {k: v for k, v in self.rest_public.markets.items() if k in symbols}
+                    self.rest_public.markets = filtered_markets
+                
+                if hasattr(self.ws_public, 'markets') and self.ws_public.markets:
+                    filtered_markets = {k: v for k, v in self.ws_public.markets.items() if k in symbols}
+                    self.ws_public.markets = filtered_markets
+                
+                if hasattr(self.rest_private, 'markets') and self.rest_private.markets:
+                    filtered_markets = {k: v for k, v in self.rest_private.markets.items() if k in symbols}
+                    self.rest_private.markets = filtered_markets
+                
+                logger.info(f"✅ Loaded and filtered markets for {len(symbols)} symbols")
+            except Exception as e:
+                logger.error(f"Failed to load markets: {e}")
+                return False
 
-            # 5) Validate symbols and log filters
+            # 5) Validate symbols and log essential info only
             for symbol in symbols:
                 if symbol not in self.rest_public.markets:
                     logger.error(f"Binance symbol not found in public markets: {symbol}")
                     return False
                 
-                # Log symbol filters for precision/rounding
+                # Log only essential market info (reduced verbosity)
                 market = self.rest_public.market(symbol)
-                logger.info(f"Binance {symbol} filters:")
-                logger.info(f"  LOT_SIZE: stepSize={market.get('precision', {}).get('amount', 'N/A')}, minQty={market.get('limits', {}).get('amount', {}).get('min', 'N/A')}, maxQty={market.get('limits', {}).get('amount', {}).get('max', 'N/A')}")
-                logger.info(f"  PRICE_FILTER: tickSize={market.get('precision', {}).get('price', 'N/A')}")
-                logger.info(f"  NOTIONAL: min={market.get('limits', {}).get('cost', {}).get('min', 'N/A')}")
+                logger.info(f"✅ {symbol}: stepSize={market.get('precision', {}).get('amount', 'N/A')}, tickSize={market.get('precision', {}).get('price', 'N/A')}, minNotional={market.get('limits', {}).get('cost', {}).get('min', 'N/A')}")
 
             self._connected = True
             self._markets_loaded = True
-            logger.info(f"Binance connected with symbols {symbols} (public markets loaded)")
+            logger.info(f"Binance connected successfully with {len(symbols)} symbols")
             return True
 
         except Exception as e:
@@ -120,6 +138,12 @@ class BinanceExchange(BaseExchange):
     def is_connected(self) -> bool:
         """Check if exchange is connected."""
         return self._connected
+    
+    def has_market(self, symbol: str) -> bool:
+        """Check if a market exists without loading all markets."""
+        if hasattr(self.rest_public, 'markets') and self.rest_public.markets:
+            return symbol in self.rest_public.markets
+        return False
 
     async def load_markets(self) -> Dict[str, Any]:
         """Load exchange markets and trading rules."""
@@ -129,29 +153,17 @@ class BinanceExchange(BaseExchange):
 
     async def watch_quotes(self, symbols: List[str]) -> AsyncGenerator[Quote, None]:
         """Watch real-time quotes for given symbols."""
-        if not self.ws_public:
-            raise RuntimeError("Public WebSocket client not initialized")
+        if not self.rest_public:
+            raise RuntimeError("Public REST client not initialized")
 
-        logger.info(f"Starting WebSocket quote monitoring for symbols: {symbols}")
+        logger.info(f"Starting quote monitoring for symbols: {symbols} (using REST API polling)")
         
         try:
             while self._connected:
                 for symbol in symbols:
                     try:
-                        logger.debug(f"Attempting to watch ticker for {symbol}")
-                        
-                        # Use WebSocket for real-time quotes
-                        ticker = await self.ws_public.watch_ticker(symbol)
-                        
-                        logger.debug(f"Received ticker for {symbol}: {ticker}")
-                        
-                        # Log raw ticker data for debugging
-                        logger.info(f"🔍 Raw Binance ticker for {symbol}:")
-                        logger.info(f"   Bid: {ticker.get('bid', 'N/A')}")
-                        logger.info(f"   Ask: {ticker.get('ask', 'N/A')}")
-                        logger.info(f"   Bid size: {ticker.get('bidVolume', 'N/A')}")
-                        logger.info(f"   Ask size: {ticker.get('askVolume', 'N/A')}")
-                        logger.info(f"   Spread: ${float(ticker.get('ask', 0)) - float(ticker.get('bid', 0)):.2f}")
+                        # Use REST API for quotes since WebSocket watchTicker is not supported
+                        ticker = await self.rest_public.fetch_ticker(symbol)
                         
                         if not ticker or 'bid' not in ticker or 'ask' not in ticker:
                             logger.warning(f"Invalid ticker data for {symbol}: {ticker}")
@@ -165,16 +177,18 @@ class BinanceExchange(BaseExchange):
                             ts_exchange=ticker.get('timestamp', int(time.time() * 1000))
                         )
                         
-                        logger.info(f"✅ Generated quote for {symbol}: bid={quote.bid}, ask={quote.ask}")
+                        # Log only essential quote info (reduced verbosity)
+                        spread = float(ticker.get('ask', 0)) - float(ticker.get('bid', 0))
+                        logger.info(f"📊 {symbol}: bid={quote.bid:.4f}, ask={quote.ask:.4f}, spread={spread:.4f}")
                         
                         self._last_update = quote.ts_exchange
                         yield quote
                             
                     except Exception as e:
-                        logger.error(f"Error watching quotes for {symbol}: {e}")
+                        logger.error(f"Error fetching quotes for {symbol}: {e}")
                         await asyncio.sleep(1)
                         
-                await asyncio.sleep(0.1)  # Small delay between symbol cycles
+                await asyncio.sleep(1.0)  # Poll every 1 second to avoid rate limiting
                 
         except Exception as e:
             logger.error(f"Failed to watch quotes: {e}")

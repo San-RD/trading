@@ -231,6 +231,9 @@ class HyperliquidExchange(BaseExchange):
             return
             
         try:
+            logger.info(f"🔄 Starting quote monitoring for symbols: {symbols}")
+            last_quote_time = {}
+            
             while self.ws_connected:
                 for symbol in symbols:
                     # Clean symbol (remove -PERP suffix)
@@ -243,14 +246,23 @@ class HyperliquidExchange(BaseExchange):
                     # Check if we have recent quotes
                     if clean_symbol in self.quotes:
                         quote = self.quotes[clean_symbol]
-                        # Return quote if it's fresh (less than 1 second old)
-                        # quote.ts_exchange is in milliseconds, time.time() is in seconds
-                        age_seconds = time.time() - (quote.ts_exchange / 1000)
-                        if age_seconds < 1.0:
+                        current_time = time.time()
+                        quote_time = quote.ts_exchange / 1000
+                        age_seconds = current_time - quote_time
+                        
+                        # Return quote if it's fresh (less than 2 seconds old) or if we haven't seen it recently
+                        if age_seconds < 2.0:
+                            # Only yield if we haven't seen this quote recently (to avoid spam)
+                            last_seen = last_quote_time.get(clean_symbol, 0)
+                            if current_time - last_seen >= 1.0:  # Log at most once per second
+                                logger.info(f"📊 HL {clean_symbol}-PERP: bid=${quote.bid:.4f} ask=${quote.ask:.4f} (age: {age_seconds:.1f}s)")
+                                last_quote_time[clean_symbol] = current_time
                             yield quote
+                        else:
+                            logger.debug(f"⚠️ Quote for {clean_symbol} is stale: {age_seconds:.1f}s old")
                             
                 # Wait for new data
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.5)  # Check every 500ms
                 
         except Exception as e:
             logger.error(f"❌ Error watching quotes: {e}")
@@ -397,6 +409,12 @@ class HyperliquidExchange(BaseExchange):
                         ts_exchange=int(time.time() * 1000)
                     )
                     self.quotes[coin] = quote
+                    
+                    # Log quote updates (but not too frequently)
+                    current_time = time.time()
+                    if not hasattr(self, '_last_quote_log') or current_time - getattr(self, '_last_quote_log', 0) >= 2.0:
+                        logger.info(f"🔄 HL {coin}-PERP quote updated: bid=${quote.bid:.4f} ask=${quote.ask:.4f}")
+                        self._last_quote_log = current_time
                     
                     # Only log significant price changes (>0.1%) to reduce noise
                     if coin in self.quotes:

@@ -353,10 +353,16 @@ class SpotPerpRunner:
         try:
             last_heartbeat = time.time()
             last_hourly_summary = time.time()
+            last_bps_display = time.time()
             
             while self.state.is_running:
                 try:
                     current_time = time.time()
+                    
+                    # Display real-time BPS calculation (every 15 seconds)
+                    if current_time - last_bps_display >= 15.0:
+                        await self._display_real_time_bps()
+                        last_bps_display = current_time
                     
                     # Check for opportunities (every 30 seconds)
                     if current_time - last_heartbeat >= 30.0:
@@ -371,14 +377,16 @@ class SpotPerpRunner:
                             await self.telegram.send_hourly_summary()
                         last_hourly_summary = current_time
                     
-                    # Risk management checks
-                    await self._check_risk_limits()
+                    # Risk management checks (every 10 seconds instead of every loop)
+                    if current_time - last_heartbeat >= 10.0:
+                        await self._check_risk_limits()
+                        last_heartbeat = current_time
                     
                     # Clean up completed orders
                     await self._cleanup_completed_orders()
                     
                     # Small delay to prevent CPU spinning
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.1)  # Increased from 0.01 to 0.1 seconds
                     
                 except Exception as e:
                     logger.error(f"Error in main loop: {e}")
@@ -494,7 +502,7 @@ class SpotPerpRunner:
             logger.error(f"Error logging market conditions: {e}")
 
     async def _check_opportunities(self):
-        """Check for arbitrage opportunities."""
+        """Check for arbitrage opportunities with deep debugging."""
         try:
             if not self.spot_quotes or not self.perp_quotes:
                 logger.debug("No quotes available for opportunity detection")
@@ -526,27 +534,58 @@ class SpotPerpRunner:
             
             # Detect opportunities for each mapped pair
             for spot_quote, perp_quote in mapped_quotes:
+                logger.info("🔍 DEEP DEBUG: Checking for opportunities...")
+                
+                # Calculate raw spread for debugging
+                spot_mid = (spot_quote.bid + spot_quote.ask) / 2
+                perp_mid = (perp_quote.bid + perp_quote.ask) / 2
+                raw_spread_bps = abs(perp_mid - spot_mid) / spot_mid * 10000
+                
+                logger.info(f"📊 Raw spread calculation:")
+                logger.info(f"   Spot mid: ${spot_mid:.4f}")
+                logger.info(f"   Perp mid: ${perp_mid:.4f}")
+                logger.info(f"   Raw spread: {raw_spread_bps:.2f} bps")
+                logger.info(f"   Min required: {self.config.detector.min_edge_bps} bps")
+                
+                if raw_spread_bps >= self.config.detector.min_edge_bps:
+                    logger.info(f"🟢 Raw spread above threshold - calling detector...")
+                else:
+                    logger.info(f"🔴 Raw spread below threshold - no opportunity")
+                    continue
+                
                 opportunities = self.detector.detect_opportunities(
                     [spot_quote], [perp_quote]
                 )
                 
                 if opportunities:
                     self.state.opportunities_detected += len(opportunities)
-                    logger.info(f"🎯 Detected {len(opportunities)} opportunities for {spot_quote.symbol} ↔ {perp_quote.symbol}")
+                    logger.info(f"🎯 DETECTOR SUCCESS: Found {len(opportunities)} opportunities!")
                     
                     # Take the best opportunity
                     best_opportunity = opportunities[0]
-                    logger.info(f"📊 Best opportunity: {best_opportunity.gross_edge_bps:.2f} bps gross, {best_opportunity.net_edge_bps:.2f} bps net")
+                    logger.info(f"📊 Best opportunity details:")
+                    logger.info(f"   Symbol: {best_opportunity.symbol}")
+                    logger.info(f"   Direction: {best_opportunity.direction.value}")
+                    logger.info(f"   Gross edge: {best_opportunity.gross_edge_bps:.2f} bps")
+                    logger.info(f"   Net edge: {best_opportunity.net_edge_bps:.2f} bps")
+                    logger.info(f"   Trade size: {best_opportunity.trade_size}")
+                    logger.info(f"   Expires at: {best_opportunity.expires_at}")
                     
-                    # Check if we should execute
-                    if await self._should_execute(best_opportunity):
+                    # Deep debug execution conditions
+                    logger.info(f"🔍 DEEP DEBUG: Checking execution conditions...")
+                    execution_result = await self._should_execute(best_opportunity)
+                    
+                    if execution_result:
+                        logger.info(f"🚀 EXECUTION APPROVED: All conditions met!")
                         logger.info(f"🚀 Executing opportunity: {best_opportunity.symbol} {best_opportunity.direction.value}")
                         await self._execute_opportunity(best_opportunity)
                         break  # Only execute one opportunity at a time
                     else:
-                        logger.info(f"❌ Opportunity not executed due to execution checks")
+                        logger.info(f"❌ EXECUTION BLOCKED: Conditions not met")
                 else:
-                    logger.info(f"❌ No opportunities detected for {spot_quote.symbol} ↔ {perp_quote.symbol}")
+                    logger.info(f"❌ DETECTOR FAILED: No opportunities returned despite raw spread above threshold")
+                    logger.info(f"   This suggests the detector has additional filters beyond raw spread")
+                    logger.info(f"   Check detector configuration and filters")
                     
         except Exception as e:
             logger.error(f"Error checking opportunities: {e}")
@@ -554,29 +593,86 @@ class SpotPerpRunner:
             traceback.print_exc()
 
     async def _should_execute(self, opportunity: SpotPerpOpportunity) -> bool:
-        """Check if we should execute the opportunity."""
+        """Check if we should execute the opportunity with deep debugging."""
         try:
+            logger.info(f"🔍 DEEP DEBUG: Checking execution conditions for {opportunity.symbol}")
+            
             # Check if opportunity has expired
-            if time.time() * 1000 > opportunity.expires_at:
+            current_time = time.time() * 1000
+            if current_time > opportunity.expires_at:
+                time_until_expiry = (opportunity.expires_at - current_time) / 1000
+                logger.info(f"   ❌ Opportunity expired: {time_until_expiry:.1f}s ago")
                 return False
+            else:
+                time_until_expiry = (opportunity.expires_at - current_time) / 1000
+                logger.info(f"   ✅ Opportunity valid: expires in {time_until_expiry:.1f}s")
             
             # Check risk limits
-            if not await self._check_risk_limits():
+            logger.info(f"   🔍 Checking risk limits...")
+            risk_check_result = await self._check_risk_limits()
+            if not risk_check_result:
+                logger.info(f"   ❌ Risk limits check failed")
                 return False
+            else:
+                logger.info(f"   ✅ Risk limits check passed")
             
             # Check if we have active orders
             if self.active_orders:
+                logger.info(f"   ❌ Active orders present: {len(self.active_orders)} orders")
+                for order_id, order_info in self.active_orders.items():
+                    logger.info(f"      - {order_info.get('symbol', 'Unknown')} {order_info.get('side', 'Unknown')} (ID: {order_id})")
                 return False
+            else:
+                logger.info(f"   ✅ No active orders")
             
             # Check minimum time between trades
             min_trade_interval = 5.0  # 5 seconds
-            if time.time() - (self.state.last_trade_time / 1000) < min_trade_interval:
-                return False
+            if self.state.last_trade_time > 0:
+                time_since_trade = time.time() - (self.state.last_trade_time / 1000)
+                if time_since_trade < min_trade_interval:
+                    remaining_cooldown = min_trade_interval - time_since_trade
+                    logger.info(f"   ❌ Trade cooldown active: {remaining_cooldown:.1f}s remaining")
+                    return False
+                else:
+                    logger.info(f"   ✅ Trade cooldown passed: {time_since_trade:.1f}s since last trade")
+            else:
+                logger.info(f"   ✅ No previous trades (first trade)")
             
+            # Check if strategy is paused
+            if self.state.is_paused:
+                logger.info(f"   ❌ Strategy is paused")
+                return False
+            else:
+                logger.info(f"   ✅ Strategy is running")
+            
+            # Check daily notional limit
+            if self.daily_notional >= self.config.risk.max_daily_notional:
+                logger.info(f"   ❌ Daily notional limit reached: ${self.daily_notional:.2f}/${self.config.risk.max_daily_notional}")
+                return False
+            else:
+                logger.info(f"   ✅ Daily notional limit OK: ${self.daily_notional:.2f}/${self.config.risk.max_daily_notional}")
+            
+            # Check consecutive losses
+            if self.consecutive_losses >= self.config.risk.max_consecutive_losses:
+                logger.info(f"   ❌ Max consecutive losses reached: {self.consecutive_losses}/{self.config.risk.max_consecutive_losses}")
+                return False
+            else:
+                logger.info(f"   ✅ Consecutive losses OK: {self.consecutive_losses}/{self.config.risk.max_consecutive_losses}")
+            
+            # Check daily loss limit
+            if self.daily_loss <= self.config.risk.max_daily_loss:
+                logger.info(f"   ❌ Daily loss limit reached: ${self.daily_loss:.2f}/{self.config.risk.max_daily_loss}")
+                return False
+            else:
+                logger.info(f"   ✅ Daily loss limit OK: ${self.daily_loss:.2f}/{self.config.risk.max_daily_loss}")
+            
+            logger.info(f"   🎯 ALL EXECUTION CONDITIONS MET - READY TO TRADE!")
             return True
             
         except Exception as e:
             logger.error(f"Error checking execution conditions: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     async def _execute_opportunity(self, opportunity: SpotPerpOpportunity):
@@ -793,23 +889,23 @@ class SpotPerpRunner:
             logger.error(f"Error handling partial fill: {e}")
 
     async def _check_risk_limits(self) -> bool:
-        """Check risk management limits."""
+        """Check risk management limits with minimal logging."""
         try:
             # Check daily notional limit
             if self.daily_notional > self.config.risk.daily_notional_limit:
-                logger.warning("Daily notional limit exceeded")
+                logger.warning(f"❌ Daily notional limit exceeded: ${self.daily_notional:.2f}/${self.config.risk.daily_notional_limit}")
                 await self._handle_risk_event("daily_notional_limit", "Daily notional limit exceeded")
                 return False
             
             # Check consecutive losses
             if self.consecutive_losses >= self.config.risk.max_consecutive_losses:
-                logger.warning("Max consecutive losses reached")
+                logger.warning(f"❌ Max consecutive losses reached: {self.consecutive_losses}/{self.config.risk.max_consecutive_losses}")
                 await self._handle_risk_event("consecutive_losses", "Max consecutive losses reached")
                 return False
             
             # Check daily loss limit
-            if self.daily_loss > self.config.risk.max_daily_loss_pct * self.daily_notional / 100:
-                logger.warning("Daily loss limit exceeded")
+            if self.daily_notional > 0 and self.daily_loss > self.config.risk.max_daily_loss_pct * self.daily_notional / 100:
+                logger.warning(f"❌ Daily loss limit exceeded: ${self.daily_loss:.2f}")
                 await self._handle_risk_event("daily_loss_limit", "Daily loss limit exceeded")
                 return False
             
@@ -817,6 +913,8 @@ class SpotPerpRunner:
             
         except Exception as e:
             logger.error(f"Error checking risk limits: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     async def _handle_risk_event(self, event_type: str, reason: str):
@@ -894,3 +992,45 @@ class SpotPerpRunner:
         except Exception as e:
             logger.error(f"Error getting guards status: {e}")
             return "Unknown"
+    
+    async def _display_real_time_bps(self):
+        """Display clean, simple BPS calculation."""
+        try:
+            if not self.spot_quotes or not self.perp_quotes:
+                return
+                
+            spot_quote = self.spot_quotes[0]
+            perp_quote = self.perp_quotes[0]
+            
+            # Calculate mid prices and spread
+            spot_mid = (spot_quote.bid + spot_quote.ask) / 2
+            perp_mid = (perp_quote.bid + perp_quote.ask) / 2
+            spread_bps = abs(perp_mid - spot_mid) / spot_mid * 10000
+            
+            # Simple status display
+            if spread_bps >= self.config.detector.min_edge_bps:
+                status = "🟢 OPPORTUNITY"
+            elif spread_bps >= self.config.detector.min_edge_bps * 0.8:
+                status = "🟡 CLOSE"
+            else:
+                status = "🔴 LOW"
+            
+            # Clean, simple output
+            logger.info(f"📊 BPS: {spread_bps:.1f} | Spot: ${spot_mid:.2f} | Perp: ${perp_mid:.2f} | {status}")
+            
+            # Only show detailed analysis when spread is above threshold
+            if spread_bps >= self.config.detector.min_edge_bps:
+                logger.info(f"🎯 SPREAD ABOVE {self.config.detector.min_edge_bps} BPS - Checking why no trades...")
+                
+                # Quick condition check
+                if self.state.is_paused:
+                    logger.info("   ❌ Strategy is PAUSED")
+                elif self.daily_notional >= self.config.risk.max_daily_notional:
+                    logger.info(f"   ❌ Daily limit reached: ${self.daily_notional:.0f}")
+                elif self.consecutive_losses >= self.config.risk.max_consecutive_losses:
+                    logger.info(f"   ❌ Max losses reached: {self.consecutive_losses}")
+                else:
+                    logger.info("   ✅ All conditions met - should be trading!")
+            
+        except Exception as e:
+            logger.error(f"Error displaying BPS: {e}")

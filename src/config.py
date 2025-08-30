@@ -114,7 +114,7 @@ class DepthModelConfig(BaseModel):
 
 class RealisticTradingConfig(BaseModel):
     """Realistic trading parameters."""
-    min_net_edge_after_slippage: float = 0.5  # 0.5 bps = 0.005% minimum edge after fees + slippage
+    min_net_edge_after_slippage: float = 0.2  # 0.5 bps = 0.005% minimum edge after fees + slippage
     slippage_estimation_method: str = "linear_slope"  # linear | exponential | none
     partial_fill_handling: str = "unwind"  # unwind | retry | accept
     rebalance_cost_accounting: bool = True  # Track rebalance costs
